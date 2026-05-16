@@ -4,7 +4,7 @@
 Topology-guided hyperdimensional computing (HDC) experiments for robust image classification under distribution shifts.  
 This repository implements an offline experiment runner for MNIST/EMNIST/SVHN-style benchmarks using HOG, spatial-pyramid Zernike descriptors, and hole/topological shape descriptors encoded into high-dimensional bipolar hypervectors.
 
-The code is designed for reproducible NeurIPS-style experiments: config-driven runs, feature extraction, HDC prototype training, late fusion, OnlineHD adaptation, and artifact logging.
+The code is designed for reproducible production-type experiments: config-driven runs, feature extraction, HDC prototype training, late fusion, OnlineHD adaptation, and artifact logging.
 
 ---
 
