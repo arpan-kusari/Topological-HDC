@@ -341,34 +341,34 @@ HMAX=4
 
 topo-hdc-run --dataset mnist --seed $SEED --corrupt none \
   --epochs $EPOCHS --hmax $HMAX \
-  --out-dir runs/mnist/clean_seed${SEED}
+  --out-dir runs/mnist/clean_seed${SEED}/
 
 topo-hdc-run --dataset mnist --seed $SEED --corrupt rotation --angle-deg 20 \
   --epochs $EPOCHS --hmax $HMAX \
-  --out-dir runs/mnist/rotation20_seed${SEED}
+  --out-dir runs/mnist/rotation20_seed${SEED}/
 
 topo-hdc-run --dataset mnist --seed $SEED --corrupt gaussian --sigma 0.1 \
   --epochs $EPOCHS --hmax $HMAX \
-  --out-dir runs/mnist/gaussian01_seed${SEED}
+  --out-dir runs/mnist/gaussian01_seed${SEED}/
 
 topo-hdc-run --dataset mnist --seed $SEED --corrupt gaussian --sigma 0.2 \
   --epochs $EPOCHS --hmax $HMAX \
-  --out-dir runs/mnist/gaussian02_seed${SEED}
+  --out-dir runs/mnist/gaussian02_seed${SEED}/
 
 topo-hdc-run --dataset mnist --seed $SEED --corrupt saltpepper --saltpepper-p 0.1 \
   --epochs $EPOCHS --hmax $HMAX \
-  --out-dir runs/mnist/saltpepper01_seed${SEED}
+  --out-dir runs/mnist/saltpepper01_seed${SEED}/
 
 for SIZE in 4 8 12; do
   topo-hdc-run --dataset mnist --seed $SEED --corrupt cutout --cutout-size $SIZE \
     --epochs $EPOCHS --hmax $HMAX \
-    --out-dir runs/mnist/cutout${SIZE}_seed${SEED}
+    --out-dir runs/mnist/cutout${SIZE}_seed${SEED}/
 done
 
 for ZOOM in 0.75 0.5; do
   topo-hdc-run --dataset mnist --seed $SEED --corrupt zoom --zoom $ZOOM \
     --epochs $EPOCHS --hmax $HMAX \
-    --out-dir runs/mnist/zoom${ZOOM}_seed${SEED}
+    --out-dir runs/mnist/zoom${ZOOM}_seed${SEED}/
 done
 ```
 
