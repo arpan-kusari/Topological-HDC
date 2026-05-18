@@ -1,5 +1,5 @@
 ```markdown
-# Topology-HDC
+## Topology-HDC
 
 Topology-guided hyperdimensional computing (HDC) experiments for robust image classification under distribution shifts.  
 This repository implements an offline experiment runner for MNIST/EMNIST/SVHN-style benchmarks using HOG, spatial-pyramid Zernike descriptors, and hole/topological shape descriptors encoded into high-dimensional bipolar hypervectors.
