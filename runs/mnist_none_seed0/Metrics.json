@@ -1,0 +1,1 @@
+{"acc_before": 0.939, "acc_after": 0.9721, "alpha_before": 0.30000000000000004, "beta_before": 0.2, "alpha_after": 1.0, "beta_after": 0.0, "num_train": 48000, "num_val": 12000, "num_test": 10000}

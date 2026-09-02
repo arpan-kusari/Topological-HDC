@@ -1,0 +1,60 @@
+{
+  "run": {
+    "seed": 0,
+    "dim": 10000,
+    "val_split": 0.2,
+    "batch_size": 512,
+    "epochs": 20,
+    "lr": 1.0,
+    "device": "cuda",
+    "n_jobs": null
+  },
+  "data": {
+    "dataset": "mnist",
+    "num_classes": 10
+  },
+  "corrupt": {
+    "kind": "none",
+    "angle_deg": 20.0,
+    "sigma": 0.1,
+    "p": 0.1,
+    "cutout_size": 12,
+    "zoom": 0.75
+  },
+  "zernike": {
+    "out_size": 64,
+    "degree": 6,
+    "radius": 20,
+    "grid": [
+      2,
+      2
+    ],
+    "pad": 2
+  },
+  "holes": {
+    "k_shape": 12,
+    "feature_length": 16,
+    "Q": 101,
+    "Hmax": 4
+  },
+  "fusion": {
+    "alpha_min": 0.0,
+    "alpha_max": 1.0,
+    "alpha_step": 0.1,
+    "beta_min": 0.0,
+    "beta_max": 1.0,
+    "beta_step": 0.1
+  },
+  "plot": {
+    "figsize": [
+      16,
+      12
+    ],
+    "before_title": "Classification Matrix for Test Set before Training",
+    "before_filename": "figures/mnist_before_train.png",
+    "fontsize": 20,
+    "after_title": "Classification Matrix for Test Set after Training",
+    "after_filename": "figures/mnist_after_train.png"
+  },
+  "out_dir": "runs/mnist_none_seed0"
+}

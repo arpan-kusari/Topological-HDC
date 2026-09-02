@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "topo-hdc"
+version = "0.1.0"
+description = "Topology-guided HDC experiments (offline NeurIPS runner)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Anonymous", email = "anon@example.com" }]
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "scikit-image",
+  "tensorflow",
+  "matplotlib",
+  "mahotas",
+  "scikit-learn",
+  "seaborn",
+  "opencv-python",
+  "joblib",
+]
+
+[project.optional-dependencies]
+# CPU-only PyTorch (uses default PyPI wheels)
+torch-cpu = [
+  "torch",
+  "torchvision",
+]
+
+# Keep CUDA torch here as well, but install using the PyTorch wheel index URL (see instructions below).
+torch-cu124 = [
+  "torch",
+  "torchvision",
+]
+
+dev = [
+  "pytest",
+  "ruff",
+  "black",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.black]
+line-length = 100 
+
+[project.scripts]
+topo-hdc-run = "topo_hdc.cli:main"

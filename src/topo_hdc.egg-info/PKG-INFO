@@ -1,0 +1,42 @@
+Metadata-Version: 2.4
+Name: topo-hdc
+Version: 0.1.0
+Summary: Topology-guided HDC experiments (offline NeurIPS runner)
+Author-email: Anonymous <anon@example.com>
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: scikit-image
+Requires-Dist: tensorflow
+Requires-Dist: matplotlib
+Requires-Dist: mahotas
+Requires-Dist: scikit-learn
+Requires-Dist: seaborn
+Requires-Dist: opencv-python
+Requires-Dist: joblib
+Provides-Extra: torch-cpu
+Requires-Dist: torch; extra == "torch-cpu"
+Requires-Dist: torchvision; extra == "torch-cpu"
+Provides-Extra: torch-cu124
+Requires-Dist: torch; extra == "torch-cu124"
+Requires-Dist: torchvision; extra == "torch-cu124"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: black; extra == "dev"
+
+Base deps (no torch)
+```python
+pip install -e .
+```
+CPU torch
+```python
+pip install -e ".[torch-cpu]"
+```
+CUDA 12.4 torch + torchvision
+Use the PyTorch index URL:
+```python
+pip install -e ".[torch-cu124]" --index-url https://download.pytorch.org/whl/cu124 
+```
