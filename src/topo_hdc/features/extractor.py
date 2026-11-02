@@ -28,6 +28,7 @@ class FeatureBatch:
     HF: np.ndarray               # shape: (N, Hmax, k)
     M: np.ndarray                # shape: (N, Hmax)
     HFEATS: np.ndarray | None = None  # shape: (num_total_holes, k), used to fit hole scaler
+    hole_counts: np.ndarray | None=None
 
 
 class FeatureExtractor:
@@ -35,10 +36,12 @@ class FeatureExtractor:
         self,
         z_cfg: ZernikeConfig,
         hole_cfg: HoleConfig,
+        ablation_cfg: RobustHoleConfig, 
         n_jobs: int | None = None,
     ) -> None:
         self.z_cfg = z_cfg
         self.hole_cfg = hole_cfg
+        self.ablation_cfg = ablation_cfg
         self.n_jobs = n_jobs if n_jobs is not None else os.cpu_count()
 
     def extract_one(self, img: np.ndarray) -> Features:
@@ -62,6 +65,7 @@ class FeatureExtractor:
 
         holes = img_process.compute_hole_feats_for_image(
             hole_k_shape=self.hole_cfg.k_shape,
+            hole_cfg=self.ablation_cfg,
         )
 
         return Features(
@@ -78,46 +82,61 @@ class FeatureExtractor:
         )
 
         return results
+        
+def hole_feature_length(
+    hole_k_shape: int,
+    ablation_cfg: RobustHoleConfig,
+) -> int:
+    base_length = hole_k_shape + 6
+
+    pyramid_length = sum(
+        level * level
+        for level in ablation_cfg.pyramid_levels
+    )
+
+    return base_length + pyramid_length
 
 
 def pad_holes(
-    hole_feat_lists: Sequence[list[np.ndarray]],
+    hole_feat_lists: list[list[np.ndarray]],
     hole_cfg: HoleConfig,
+    ablation_cfg: RobustHoleConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Converts ragged hole feature lists into padded tensor format.
+    feature_length = hole_feature_length(
+        hole_k_shape=hole_cfg.k_shape,
+        ablation_cfg=ablation_cfg,
+    )
 
-    Returns
-    -------
-    HF:
-        Shape (N, Hmax, k), padded hole features.
-    M:
-        Shape (N, Hmax), mask where 1 indicates a valid hole.
-    """
     N = len(hole_feat_lists)
-    Hmax = hole_cfg.Hmax
-    k = hole_cfg.feature_length
 
-    HF = np.zeros((N, Hmax, k), dtype=np.float32)
-    M = np.zeros((N, Hmax), dtype=np.float32)
+    HF = np.zeros(
+        (N, hole_cfg.Hmax, feature_length),
+        dtype=np.float32,
+    )
+    M = np.zeros(
+        (N, hole_cfg.Hmax),
+        dtype=np.float32,
+    )
 
     for i, holes in enumerate(hole_feat_lists):
-        m = min(len(holes), Hmax)
+        m = min(len(holes), hole_cfg.Hmax)
 
         if m > 0:
-            arr = np.asarray(holes[:m], dtype=np.float32)
+            values = np.asarray(
+                holes[:m],
+                dtype=np.float32,
+            )
 
-            if arr.shape[-1] != k:
+            if values.shape[1] != feature_length:
                 raise ValueError(
-                    f"Hole feature length mismatch at sample {i}: "
-                    f"expected {k}, got {arr.shape[-1]}"
+                    f"Sample {i}: expected hole feature length "
+                    f"{feature_length}, got {values.shape[1]}."
                 )
 
-            HF[i, :m, :] = arr
+            HF[i, :m] = values
             M[i, :m] = 1.0
 
     return HF, M
-
 
 def flatten_holes(
     hole_feat_lists: Sequence[list[np.ndarray]],
@@ -149,6 +168,7 @@ def compute_features(
     X: np.ndarray,
     z_cfg: ZernikeConfig,
     hole_cfg: HoleConfig,
+    ablation_cfg: RobustHoleConfig,
     n_jobs: int | None = None,
 ) -> FeatureBatch:
     """
@@ -172,6 +192,7 @@ def compute_features(
     feature_extractor = FeatureExtractor(
         z_cfg=z_cfg,
         hole_cfg=hole_cfg,
+        ablation_cfg=ablation_cfg,
         n_jobs=n_jobs,
     )
 
@@ -189,6 +210,12 @@ def compute_features(
     HF, mask = pad_holes(
         hole_feat_lists=holes,
         hole_cfg=hole_cfg,
+        ablation_cfg=ablation_cfg,
+    )
+    # hole_counts = mask.sum(axis=1).astype(np.int64)
+    raw_hole_counts = np.asarray(
+        [len(img_holes) for img_holes in holes],
+        dtype=np.int64,
     )
 
     return FeatureBatch(
@@ -197,4 +224,5 @@ def compute_features(
         HF=HF,
         M=mask,
         HFEATS=HFEATS,
+        hole_counts=raw_hole_counts,
     )

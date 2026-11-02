@@ -15,15 +15,17 @@ def apply_rotation(X_test, angle, scale=1):
         # Apply the rotation
         rot_img = cv2.warpAffine(img, M, (w, h))
         X_test_rot.append(rot_img)
+    X_test_rot = np.array(X_test_rot)
     return X_test_rot
     
-def aplly_gaussian_noise(X_test, sigma):
+def apply_gaussian_noise(X_test, sigma):
     """Add N(0, sigma^2) noise and clip to [0,1]."""
     X_test_g = []
     noise = np.random.normal(loc=0.0, scale=sigma, size=X_test[0].shape)
     for img in X_test:
         img_g = np.clip(img + noise, 0.0, 1.0)
-        X_test_g.append(img_g)    
+        X_test_g.append(img_g) 
+    X_test_g = np.array(X_test_g)   
     return X_test_g
 
 def apply_salt_pepper_noise(X_test, p, xmin=0, xmax=255):
@@ -38,6 +40,7 @@ def apply_salt_pepper_noise(X_test, p, xmin=0, xmax=255):
         img_s[r < (p / 2)] = xmin
         img_s[(r >= (p / 2)) & (r < p)] = xmax
         X_test_salt.append(img_s)
+    X_test_salt = np.array(X_test_salt)
     return X_test_salt
     
 def apply_cutout(X_test, size, value=0):
@@ -62,6 +65,7 @@ def apply_cutout(X_test, size, value=0):
 
         img_c[y1:y2, x1:x2] = value
         X_test_cut.append(img_c)
+    X_test_cut = np.array(X_test_cut)
     return X_test_cut
     
 def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
@@ -101,12 +105,13 @@ def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
     canvas[y0:y0+small_size, x0:x0+small_size] = small
     return canvas
     
-def apply_zoom(X_test, zoom, out_size):
+def apply_zoom(X_test, zoom):
     X_zoom = []
     for img in X_test:
         out_size = img.shape[0]
         img_z = zoom_to_canvas(img, zoom=zoom, out_size=out_size)
         X_zoom.append(img_z)
+    X_zoom = np.array(X_zoom)
     return X_zoom
    
 def apply_corruption(X: np.ndarray, cfg: CorruptionConfig):
@@ -115,7 +120,7 @@ def apply_corruption(X: np.ndarray, cfg: CorruptionConfig):
     elif cfg.kind == "gaussian":
         X = apply_gaussian_noise(X_test=X, sigma=cfg.sigma)
     elif cfg.kind == "saltpepper":
-        X = apply_salt_peppe_noise(X_test=X, p=cfg.p)
+        X = apply_salt_pepper_noise(X_test=X, p=cfg.p)
     elif cfg.kind == "cutout":
         X = apply_cutout(X_test=X, size=cfg.cutout_size)
     elif cfg.kind == "zoom":

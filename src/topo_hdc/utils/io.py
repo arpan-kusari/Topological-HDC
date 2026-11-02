@@ -4,6 +4,7 @@ import json
 import numpy as np
 from dataclasses import asdict, is_dataclass
 from topo_hdc.hdc.encoders import Encoders
+from collections.abc import Mapping
 
 def make_run_dir(run_dir_name, cfg) -> Path:
     path = Path(run_dir_name)
@@ -46,12 +47,94 @@ def save_model_encoder(path, encoder, name) -> None:
         }, path / f"{name}.pt",
     )
     
-def save_model_protos(path, protos, name) -> None:
-    torch.save(
+def clone_model_protos(
+    protos: Mapping[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    return {
+        name: proto.detach().clone()
+        for name, proto in protos.items()
+    }
+    
+def save_model_protos(
+    out_dir: str | Path,
+    prototypes: Mapping[str, torch.Tensor],
+    name: str,
+    metadata: dict | None = None,
+) -> Path:
+    """
+    Save HDC class prototypes as CPU tensors.
+
+    Parameters
+    ----------
+    out_dir:
+        Experiment output directory.
+
+    prototypes:
+        Mapping such as:
         {
-            "protos": protos,
-        }, path / f"{name}.pt"
+            "hog": Tensor(C, D),
+            "zernike": Tensor(C, D),
+        }
+
+    name:
+        Output filename without extension.
+
+    metadata:
+        Optional information such as fusion weights and epoch count.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    prototype_state = {
+        channel: prototype.detach().cpu().clone()
+        for channel, prototype in prototypes.items()
+    }
+
+    artifact = {
+        "prototypes": prototype_state,
+        "metadata": metadata or {},
+    }
+
+    output_path = out_dir / f"{name}.pt"
+    torch.save(artifact, output_path)
+
+    return output_path
+    
+def load_model_protos(
+    path: str | Path, 
+    device: str | Path, 
+    expected_channels: tuple[str, ...] = ("hog", "zernike"),
+)-> tuple[dict[str, torch.Tensor], dict]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Prototype file not found : {path}")
+        
+    artifact = torch.load(
+        path,
+        map_location=device,
+        weights_only=False,
     )
+
+    if "prototypes" not in artifact:
+        raise ValueError(
+            f"Invalid prototype artifact {path}: missing 'prototypes'."
+        )
+
+    prototypes = {
+        name: prototype.to(device).clone()
+        for name, prototype in artifact["prototypes"].items()
+    }
+
+    missing = set(expected_channels) - set(prototypes)
+    if missing:
+        raise ValueError(
+            f"Prototype artifact {path} is missing channels: "
+            f"{sorted(missing)}"
+        )
+
+    metadata = artifact.get("metadata", {})
+
+    return prototypes, metadata
     
 def save_model_alpha_beta(path, alpha, beta, name) -> None:
     with open(path / f"{name}.txt", "w") as f:

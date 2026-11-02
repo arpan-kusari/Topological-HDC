@@ -11,10 +11,12 @@ from topo_hdc.config import (
     HoleConfig,
     FusionConfig,
     PlotConfig,
+    FeatureConfig,
     ExperimentConfig,
     validate_config,
 )
 from topo_hdc.run import run_experiment
+from topo_hdc.ablations import ABLATION_PRESETS, get_ablation_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Dataset
     parser.add_argument("--dataset", type=str, default="mnist")
-    parser.add_argument("--num-classes", type=float, default=10)
+    parser.add_argument("--num-classes", type=int, default=10)
     
 
     # Run settings
@@ -35,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1.0)
     parser.add_argument("--val-split", type=float, default=0.2)
+    parser.add_argument(
+        "--force-recompute-prototypes",
+        action="store_true",
+        help="Ignore saved prototypes and retrain them.",
+    )
 
     # Corruption
     parser.add_argument(
@@ -51,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Hole / topology settings
     parser.add_argument("--k-shape", type=int, default=12)
-    parser.add_argument("--hole-feature-length", type=int, default=16)
+    parser.add_argument("--hole-feature-length", type=int, default=39)
     parser.add_argument("--hole-q", type=int, default=101)
     parser.add_argument("--hmax", type=int, default=4)
     
@@ -74,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=str, default="runs/mnist")
     parser.add_argument("--cache-dir", type=str, default="cache/features")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--n-jobs", type=int, default=1)
     
     # Plot settings
     parser.add_argument("--plot-figsize", type=tuple, default=(16,12))
@@ -82,6 +90,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot-after-title", type=str, default="Classification Matrix for Test Set after Training")
     parser.add_argument("--plot-before-filename", type=str, default='figures/mnist_before_train.png')
     parser.add_argument("--plot-after-filename", type=str, default='figures/mnist_after_train.png')
+    
+    #Ablation 
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default="A3_spoke_pyramid",
+        choices=sorted(ABLATION_PRESETS),
+        help="Hole-extraction ablation preset.",
+    )
+    
+
+    parser.add_argument(
+        "--force-recompute-features",
+        action="store_true",
+    )
+    
 
     return parser
 
@@ -98,6 +122,7 @@ def main() -> None:
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
+        force_recompute_prototypes=args.force_recompute_prototypes,
     )
 
     data_cfg = DatasetConfig(
@@ -146,6 +171,15 @@ def main() -> None:
         before_filename=args.plot_before_filename,
         after_filename=args.plot_after_filename,
     )
+    
+    ablation_cfg = get_ablation_config(args.ablation)
+    
+    feature_cfg = FeatureConfig(
+        cache_dir=Path(args.cache_dir),
+        use_cache=not args.no_cache,
+        force_recompute=args.force_recompute_features,
+        n_jobs=args.n_jobs,
+    )
 
     cfg = ExperimentConfig(
         run=run_cfg,
@@ -155,6 +189,9 @@ def main() -> None:
         holes=hole_cfg,
         fusion=fusion_cfg,
         plot=plot_cfg,
+        features=feature_cfg,
+        ablation_name=args.ablation,
+        ablation=ablation_cfg,
         out_dir=Path(args.out_dir),
     )
 

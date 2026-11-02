@@ -1,11 +1,24 @@
 from scipy.interpolate import splprep, splev
+from scipy.ndimage import distance_transform_edt
 from skimage.filters import threshold_otsu, threshold_local, gaussian
-from skimage.morphology import closing, opening, remove_small_objects, disk
+from skimage.morphology import closing, opening, remove_small_objects, disk, closing
 from skimage.measure import label, regionprops, find_contours
 from mahotas.features import zernike_moments
 from skimage.transform import resize
 from skimage.feature import hog
 import numpy as np
+from dataclasses import dataclass
+from topo_hdc.config import RobustHoleConfig
+
+@dataclass
+class HoleCandidate:
+    mask: np.ndarray
+    centroid_yx: np.ndarray
+    seed_yx: np.ndarray
+    area: int
+    enclosure_score: float
+    missing_fraction: float
+    scale_count: int = 1
 
 class ProcessImage:
     def __init__(self, img):
@@ -281,35 +294,248 @@ class ProcessImage:
         if len(xs) == 0:
             return np.array([14.0, 14.0])
         return np.array([ys.mean(), xs.mean()])
+        
+    @staticmethod
+    def _maximum_circular_false_run(values: np.ndarray) -> int:
+        values = np.asarray(values, dtype=bool)
+        if values.size == 0 or values.all():
+            return 0
+        if (~values).all():
+            return len(values)
+        doubled = np.concatenate([values, values])
+        longest = 0
+        current = 0
+        for value in doubled:
+            if value:
+                current = 0
+            else:
+                current += 1
+                longest = max(longest, current)
+        return min(longest, len(values))
+        
+    @staticmethod
+    def _interior_seed(region_mask: np.ndarray) -> np.ndarray:
+        distance = distance_transform_edt(region_mask)
+        
+        if distance.max() <= 0:
+            coordds = np.argwhere(region_mask)
+            return coords.mean(axis=0).astype(np.floaat64)
+            
+        y, x = np.unravel_index(np.argmax(distance), distance.shape)
+        return np.asarray([y, x], dtype=np.float64)
+        
+    @staticmethod
+    def _candidate_match(
+        first: HoleCandidate,
+        second: HoleCandidate,
+        distance_threshold: bool,
+        ) -> bool:
+        distance = np.linalg.norm(first.centroid_yx - second.centroid_yx)
+        intersection = np.logical_and(first.mask, second.mask).sum()
+        union = np.logical_or(first.mask, second.mask).sum()
+        iou = intersection/max(union, 1)
+        
+        return distance <= distance_threshold or iou >= 0.2
+
 
     # ----------------------------
     # Holes: contours -> RTS-invariant feature vector
     # ----------------------------
-    def hole_masks(self):
-        inv = ~self.bw
-        lab = label(inv)
-        H, W = self.bw.shape
-        holes = []
-        for r in regionprops(lab):
-            coords = r.coords
-            touches_border = np.any(
-                (coords[:, 0] == 0) | (coords[:, 0] == H-1) |
-                (coords[:, 1] == 0) | (coords[:, 1] == W-1)
+    def spoke_enclosure(self,
+                        foreground: np.ndarray,
+                        seed_yx: np.ndarray,
+                        num_spokes: int = 48,
+                        ray_step: float = 0.5,
+                        ) -> tuple[float, float]:
+        """
+        Returns: 
+            enclosure_score: Fraction of rays that encounter foreground
+            missing_fraction: Longest contiguous angular interval without foreground, normalized by number of spokes
+        """
+        foreground = np.asarray(foreground, dtype=bool)
+        H, W = foreground.shape
+        seed_y, seed_x = seed_yx
+        
+        max_radius = float(np.hypot(H, W))
+        radii = np.arange(ray_step, max_radius + ray_step, ray_step)
+        
+        hits = np.zeros(num_spokes, dtype=bool)
+        
+        for j in range(num_spokes):
+            theta = 2.0 * np.pi * j / num_spokes
+            
+            ys = np.rint(seed_y + radii * np.sin(theta)).astype(np.int64)
+            xs = np.rint(seed_x + radii * np.cos(theta)).astype(np.int64)
+            
+            valid = (
+                (ys >= 0)
+                & (ys < H)
+                & (xs >= 0)
+                & (xs < W)
             )
-            if not touches_border:
-                m = np.zeros((H, W), dtype=bool)
-                m[coords[:, 0], coords[:, 1]] = True
-                holes.append(m)
-        return holes
+            ys = ys[valid]
+            xs = xs[valid]
+            
+            if len(xs) > 0:
+                hits[j] = np.any(foreground[ys, xs])
+        enclosure_score = float(hits.mean())
+        missing_run = self._maximum_circular_false_run(hits)
+        missing_fraction = float(missing_run / num_spokes)
+        
+        return enclosure_score, missing_fraction
+        
+    def hole_candidates_at_scale(
+        self,
+        foreground: np.ndarray,
+        radius: int,
+        cfg: RobustHoleConfig,
+        ) -> list[HoleCandidate]:
+        """
+        Generate bounded-background candidates after closing, then validate
+        them against the original foreground using the spoke wheel
+        """
+        foreground = np.asarray(foreground, dtype=bool)
+        H, W = foreground.shape
+        if radius == 0:
+            closed = foreground.copy()
+        else:
+            closed = closing(
+                foreground, footprint=disk(radius),
+            )
+        inverse = ~closed
+        labels = label(inverse, connectivity=2)
+        
+        border_labels = set(
+            np.unique(
+                np.concatenate(
+                    [
+                        labels[0, :],
+                        labels[-1, :],
+                        labels[:, 0],
+                        labels[:, -1],
+                    ]
+                )
+            ).tolist()
+        )
+        
+        max_area = int(cfg.max_area_fraction * H * W)
+        candidates = []
+        
+        for region in regionprops(labels):
+            if region.label in border_labels:
+                continue
+                
+            if region.area < cfg.min_area or region.area > max_area:
+                continue
+                
+            region_mask = labels == region.label
+            seed_yx = self._interior_seed(region_mask)
+            
+            enclosure, missing_fraction = self.spoke_enclosure(
+                foreground=foreground, 
+                seed_yx=seed_yx, 
+                num_spokes=cfg.num_spokes, 
+                ray_step = cfg.ray_step,
+            )
+            if enclosure < cfg.enclosure_threshold:
+                continue
+            if missing_fraction > cfg.max_missing_fraction:
+                continue
+            
+            centroid_yx = np.asarray(region.centroid, dtype=np.float64)
+            
+            candidates.append(
+                HoleCandidate(
+                    mask=region_mask, 
+                    centroid_yx=centroid_yx,
+                    seed_yx=seed_yx,
+                    area=int(region.area),
+                    enclosure_score=enclosure,
+                    missing_fraction=missing_fraction,
+                )
+            )
+        return candidates
+        
+    def merge_hole_candidates(
+        self,
+        candidate_groups: list[list[HoleCandidate]],
+        cfg: RobustHoleConfig,
+        ) -> list[HoleCandidate]:
+        merged: list[list[tuple[int, HoleCandidate]]] = []
+        
+        for scale_index, candidates in enumerate(candidate_groups):
+            for candidate in candidates:
+                matching_group = None
+                for group in merged:
+                    if any(
+                        self._candidate_match(
+                            candidate, 
+                            existing, 
+                            cfg.merge_distance,
+                            )
+                            for _, existing in group
+                    ):
+                        matching_group = group
+                        break
+                            
+                if matching_group is None:
+                    merged.append([(scale_index, candidate)])
+                else:
+                    matching_group.append((scale_index, candidate))
+        accepted = []
+        for group in merged:
+            scale_count = len({scale for scale, _ in group})
+            if scale_count < cfg.min_scale_count:
+                continue
+            best = max(
+                (candidate for _, candidate in group),
+                key = lambda candidate: (
+                    candidate.enclosure_score,
+                    -candidate.missing_fraction,
+                ),
+            )
+            best.scale_count = scale_count
+            accepted.append(best)
+        return sorted(
+            accepted, 
+            key=lambda candidate: candidate.area,
+            reverse=True,
+        )
+            
+    def robust_hole_masks(
+        self,
+        cfg: RobustHoleConfig | None = None,
+    ) -> list[HoleCandidate]:
+        if cfg is None:
+            cfg = RobustHoleConfig()
+        foreground = np.asarray(self.bw, dtype=bool)
+        if not foreground.any():
+            return []
+        candidates_by_scale = [
+            self.hole_candidates_at_scale(
+                foreground=foreground,
+                radius=radius,
+                cfg=cfg,
+            )
+            for radius in cfg.closing_radii
+        ]
+        return self.merge_hole_candidates(
+            candidate_groups=candidates_by_scale,
+            cfg=cfg,
+        )
 
-    def extract_hole_contours(self):
+    def extract_hole_contours(
+        self,
+        cfg: RobustHoleConfig | None = None,
+    ) -> list[tuple[np.ndarray, HoleCandidate]]:
         hole_cs = []
-        for hm in self.hole_masks():
-            cs = find_contours(hm.astype(float), level=0.5)
-            if len(cs) > 0:
-                cs = sorted(cs, key=lambda c: c.shape[0], reverse=True)
-                hole_cs.append(cs[0])
-        hole_cs = sorted(hole_cs, key=lambda c: c.shape[0], reverse=True)
+        for hm in self.robust_hole_masks(cfg):
+            cs = find_contours(hm.mask.astype(np.float32), level=0.5)
+            if not cs:
+                continue
+                
+            contour = max(cs, key = lambda c:c.shape[0])
+            hole_cs.append((contour, hm))
         return hole_cs
 
     def hole_relative_to_outer(self, outer_pts_yx, hole_centroid_yx):
@@ -439,8 +665,103 @@ class ProcessImage:
         xr, yr = R_xy @ np.vstack([x, y])
         # mean in canonical frame
         return np.array([yr.mean(), xr.mean()], dtype=np.float64)  # (y,x)
+        
+    def spatial_pyramid_membership(
+        self,
+        point_yx: np.ndarray,
+        outer_points_yx: np.ndarray,
+        levels: tuple[int, ...] = (1, 2, 4),
+    ) -> np.ndarray:
+        """
+        Encode a canonical hole position using one-hot cell membership at
+        multiple spatial-pyramid levels.
 
-    def compute_hole_feats_for_image(self, hole_k_shape=12):
+        For levels (1, 2, 4), the output length is 1 + 4 + 16 = 21.
+
+        Parameters
+        ----------
+        point_yx:
+            Canonical hole centroid, shape (2,), in (y, x).
+        outer_points_yx:
+            Canonical outer-contour points, shape (N, 2).
+        levels:
+            Number of cells per dimension at each pyramid level.
+
+        Returns
+        -------
+        np.ndarray:
+            Concatenated one-hot cell memberships.
+        """
+        point_yx = np.asarray(point_yx, dtype=np.float64)
+        outer_points_yx = np.asarray(
+            outer_points_yx,
+            dtype=np.float64,
+        )
+
+        if outer_points_yx.ndim != 2 or outer_points_yx.shape[1] != 2:
+            raise ValueError(
+                "outer_points_yx must have shape (N, 2)."
+            )
+
+        min_y, min_x = outer_points_yx.min(axis=0)
+        max_y, max_x = outer_points_yx.max(axis=0)
+
+        height = max(max_y - min_y, 1e-12)
+        width = max(max_x - min_x, 1e-12)
+
+        py, px = point_yx
+
+        # Normalize relative to the canonical outer-shape bounding box.
+        y01 = np.clip(
+            (py - min_y) / height,
+            0.0,
+            1.0 - 1e-12,
+        )
+        x01 = np.clip(
+            (px - min_x) / width,
+            0.0,
+            1.0 - 1e-12,
+        )
+
+        memberships = []
+
+        for level in levels:
+            if level <= 0:
+                raise ValueError(
+                    f"Pyramid level must be positive; received {level}."
+                )
+
+            row = min(int(y01 * level), level - 1)
+            col = min(int(x01 * level), level - 1)
+
+            one_hot = np.zeros(level * level, dtype=np.float64)
+            cell_index = row * level + col
+            one_hot[cell_index] = 1.0
+
+            memberships.append(one_hot)
+
+        return np.concatenate(memberships)
+    
+        
+    def hole_feature_length(
+        self,
+        hole_k_shape: int,
+        ablation_cfg: RobustHoleConfig,
+    ) -> int:
+        base_length = hole_k_shape + 6
+
+        pyramid_length = sum(
+            level * level
+            for level in ablation_cfg.pyramid_levels
+        )
+
+        return base_length + pyramid_length
+
+    def compute_hole_feats_for_image(
+        self, 
+        hole_k_shape: int =12,
+        hole_cfg: RobustHoleConfig | None = None,
+    ):
         self.bw = self.preprocess()
 
         # outer spline
@@ -449,36 +770,147 @@ class ProcessImage:
             return []  # no digit, no holes
 
         outer_contour = contours[0]
-        outer_res = self.resample_polyline(outer_contour, n=256, closed=True)
-        outer_tck = self.fit_periodic_spline(outer_res, s=1.0, per=True)
-        outer_pts = self.sample_spline(outer_tck, n=256)
+        outer_res = self.resample_polyline(
+            outer_contour, 
+            n=256, 
+            closed=True,
+        )
+        outer_tck = self.fit_periodic_spline(
+            outer_res, 
+            s=1.0, 
+            per=True,
+        )
+        outer_pts = self.sample_spline(
+            outer_tck, 
+            n=256,
+        )
+        
+        c_outer, s_outer, R_xy = self.canonical_frame_with_signfix(outer_pts)
+        
+        com_y, com_x = self.foreground_com_canonical(
+            c_outer, 
+            s_outer, 
+            R_xy,
+        )
+        
+        detected_holes = self.extract_hole_contours(hole_cfg)
+        
+        expected_shape_length = hole_k_shape
+        expected_pyramid_length = sum(
+            level * level for level in hole_cfg.pyramid_levels
+        )
+        expected_geometry_length = 6
 
-        c_outer = outer_pts.mean(axis=0)
-        s_outer = np.sqrt(np.mean(np.sum((outer_pts - c_outer) ** 2, axis=1))) + 1e-12
-
-        hole_cs = self.extract_hole_contours()
-        feats = []
-        for hc in hole_cs:
+        features = []
+        for hc, candidate in detected_holes:
             # centroid
-            h_res = self.resample_polyline(hc, n=128, closed=True)
-            h_tck = self.fit_periodic_spline(h_res, s=0.5, per=True)
-            h_pts = self.sample_spline(h_tck, n=128)
-            hole_centroid = h_pts.mean(axis=0)
+            h_res = self.resample_polyline(
+                hc, 
+                n=128, 
+                closed=True,
+            )
+            h_tck = self.fit_periodic_spline(
+                h_res, 
+                s=0.5, 
+                per=True,
+            )
+            h_pts = self.sample_spline(
+                h_tck, 
+                n=128,
+            )
+            hole_centroid = candidate.centroid_yx
 
-            t, dist = self.hole_relative_to_outer(outer_pts, hole_centroid)
-            dist_norm = dist / s_outer
-
-            c_outer, s_outer, R_xy = self.canonical_frame_with_signfix(outer_pts)
-
-            canon = self.canonicalize_point_yx(hole_centroid, c_outer, s_outer, R_xy)
+            canon = self.canonicalize_point_yx(
+                hole_centroid, 
+                c_outer, 
+                s_outer, 
+                R_xy,
+            )
             py, px = canon  # RTS-invariant coordinates of the hole centroid
+            
+            hole_feature_len = self.hole_feature_length(
+                hole_k_shape=hole_k_shape,
+                ablation_cfg=hole_cfg,
+            )
 
-            f_shape = self.hole_feature_vector(hc, k=hole_k_shape)  # 12
-            # tail = tail_ratio_feature(bw, outer_pts, hole_centroid)
-            com_yx = self.foreground_com_canonical(c_outer, s_outer, R_xy)
-            com_y, com_x = com_yx
-            f = np.hstack([f_shape, [py, px, com_y, com_x]]).astype(np.float64)  # 14
-            feats.append(f)
-        return feats
+            f_shape = self.hole_feature_vector(
+                hc, 
+                k=hole_k_shape,
+            )  # 12
+            
+            pers = (
+                candidate.scale_count/max(len(hole_cfg.closing_radii), 1)
+                if hole_cfg is not None
+                else 1.0
+            )
+            
+            if hole_cfg.use_reliability_features:
+                enclosure = candidate.enclosure_score
+                persistence = pers
+            else:
+                enclosure = 0.0
+                persistence = 0.0
+                
+            # Spatial-pyramid membership.
+            pyramid_length = sum(
+                level * level
+                for level in hole_cfg.pyramid_levels
+            )
+
+            if hole_cfg.use_spatial_pyramid:
+                pyramid_features = self.spatial_pyramid_membership(
+                    point_yx=hole_centroid,
+                    outer_points_yx=outer_pts,
+                    levels=hole_cfg.pyramid_levels,
+                )
+            else:
+                # Keep dimensions identical across ablation variants.
+                pyramid_features = np.zeros(
+                    pyramid_length,
+                    dtype=np.float64,
+                )
+            f_shape = np.asarray(f_shape, dtype=np.float32).reshape(-1)
+        
+            geometry_features = np.asarray(
+                [
+                    py,
+                    px,
+                    com_y,
+                    com_x,
+                    enclosure,
+                    persistence,
+                ],
+                dtype=np.float32,
+            )
+            pyramid_features = np.asarray(
+                pyramid_features,
+                dtype=np.float32,
+            ).reshape(-1)
+            feature = np.concatenate(
+                [f_shape, geometry_features, pyramid_features]
+            ).astype(np.float32)
+
+            
+            if len(f_shape) != expected_shape_length:
+                raise ValueError(
+                    f"Shape descriptor: expected {expected_shape_length}, "
+                    f"got {len(f_shape)}."
+                )
+
+            if len(geometry_features) != expected_geometry_length:
+                raise ValueError(
+                    f"Geometry descriptor: expected {expected_geometry_length}, "
+                    f"got {len(geometry_features)}."
+                )
+
+            if len(pyramid_features) != expected_pyramid_length:
+                raise ValueError(
+                    f"Pyramid descriptor: expected {expected_pyramid_length}, "
+                    f"got {len(pyramid_features)} for levels "
+                    f"{hole_cfg.pyramid_levels}."
+                )
+            features.append(feature)
+
+        return features
         
     

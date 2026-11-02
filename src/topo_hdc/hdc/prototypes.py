@@ -2,6 +2,12 @@ import torch
 from collections.abc import Callable
 import numpy as np
 from topo_hdc.config import RunConfig, DatasetConfig
+from topo_hdc.utils.io import (
+    clone_model_protos,
+    load_model_protos,
+    save_model_protos,
+)
+from pathlib import Path
  
 @torch.no_grad()
 def train_prototypes_stream_batches(H_batches_fn: Callable, 
@@ -51,6 +57,52 @@ def train_prototypes_stream_all(generators, y_np, run_cfg: RunConfig, data_cfg: 
         run_cfg=run_cfg,
         data_cfg=data_cfg)
     return protos
+    
+def load_or_train_prototypes_before(
+    out_dir,
+    train_generators,
+    y_train,
+    run_cfg,
+    data_cfg,
+    force_recompute: bool = False,
+):
+    prototype_path = Path(out_dir) / "prototypes_before.pt"
+
+    if prototype_path.is_file() and not force_recompute:
+        print(f"Loading initial prototypes from {prototype_path}")
+
+        prototypes, metadata = load_model_protos(
+            path=prototype_path,
+            device=run_cfg.device,
+        )
+
+        return prototypes, metadata
+
+    print("Initial prototypes not found; computing them.")
+
+    prototypes = train_prototypes_stream_all(
+        generators=train_generators,
+        y_np=y_train,
+        run_cfg=run_cfg,
+        data_cfg=data_cfg,
+    )
+
+    metadata = {
+        "stage": "before_onlinehd",
+        "epochs": 0,
+        "dim": int(run_cfg.dim),
+        "num_classes": int(data_cfg.num_classes),
+        "channels": list(prototypes),
+    }
+
+    save_model_protos(
+        out_dir=prototype_path,
+        prototypes=prototypes,
+        name="Protos_before",
+        metadata=metadata,
+    )
+
+    return clone_model_protos(prototypes), metadata
     
 @torch.no_grad()
 def onlinehd_train_stream(

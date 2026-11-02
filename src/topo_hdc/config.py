@@ -12,13 +12,15 @@ class RunConfig:
     epochs: int = 20
     lr: float = 1.0
     alphas=np.linspace(0, 1, 11).tolist()
-    betas=np.linspace(0, 1, 11).tolist()
+    # betas=np.linspace(0, 1, 11).tolist()
+    betas=np.array([0.0, 0.01, 0.025, 0.05, 0.1, 0.2, 0.4]).tolist()
     device: str = "cuda"
     n_jobs: int = None
+    force_recompute_prototypes: bool = False
     
 @dataclass(frozen=True)
 class DatasetConfig:
-    dataset: str = "mnist" # emnist|svhn
+    dataset: str = "mnist" # emnist|svhn | medmnist
     num_classes:int = 10 # 26
 
 @dataclass(frozen=True)
@@ -33,9 +35,30 @@ class CorruptionConfig:
 @dataclass(frozen=True)
 class HoleConfig:
     k_shape: int = 12
-    feature_length: int = 16 # k_shape + hole feature vector
+    feature_length: int = 59 # k_shape + hole feature vector
     Q: int = 101
     Hmax: int = 5
+    
+@dataclass(frozen=True)
+class RobustHoleConfig:
+    proposal_method: str = "multiscale"
+    use_spoke_validation: bool = True
+    use_multiscale_persistence: bool = True
+    use_spatial_pyramid: bool = True
+    use_reliability_features: bool = True
+    
+    closing_radii: tuple[int, ...] = (0, 1)
+    num_spokes: int = 64
+    enclosure_threshold: float = 0.95
+    max_missing_fraction: float = 0.08
+    
+    min_area: int = 4
+    max_area_fraction: float = 0.30
+    min_scale_count: int = 2
+    ray_step: float = 0.5
+    merge_distance: float = 3.0
+    
+    pyramid_levels: tuple[int, ...] = (1, 2, 4)
     
 @dataclass(frozen=True)
 class ZernikeConfig:
@@ -62,6 +85,13 @@ class PlotConfig:
     fontsize:int =20
     after_title: str = "Classification Matrix for Test Set after Training"
     after_filename: str = 'figures/mnist_after_train.png'
+    
+@dataclass(frozen=True)
+class FeatureConfig:
+    cache_dir: Path = Path("cache/features")
+    use_cache: bool = True
+    force_recompute: bool = False
+    n_jobs: int = -1
 
 
 @dataclass(frozen=True)
@@ -71,13 +101,16 @@ class ExperimentConfig:
     corrupt: CorruptionConfig
     zernike: ZernikeConfig
     holes: HoleConfig
+    ablation: RobustHoleConfig
+    ablation_name: str
     fusion: FusionConfig
     plot: PlotConfig
+    features: FeatureConfig
     out_dir: Path
 
 
 def validate_config(cfg: ExperimentConfig) -> None:
-    allowed_datasets = {"mnist", "emnist", "svhn"}
+    allowed_datasets = {"mnist", "emnist", "svhn", "medmnist"}
     allowed_corruptions = {"none", "rotation", "gaussian", "saltpepper", "cutout", "zoom"}
 
     if cfg.data.dataset not in allowed_datasets:
@@ -97,3 +130,24 @@ def validate_config(cfg: ExperimentConfig) -> None:
 
     if not (0.0 < cfg.run.val_split < 1.0):
         raise ValueError("data.val_split must be between 0 and 1.")
+        
+    if cfg.ablation.proposal_method not in {"exact", "multiscale"}:
+        raise ValueError(
+            "ablation.proposal_method must be 'exact' or 'multiscale'."
+        )
+
+    if cfg.ablation.num_spokes <= 0:
+        raise ValueError("ablation.num_spokes must be positive.")
+
+    if not 0.0 <= cfg.ablation.enclosure_threshold <= 1.0:
+        raise ValueError(
+            "ablation.enclosure_threshold must be in [0, 1]."
+        )
+
+    if (
+        cfg.ablation.proposal_method == "exact"
+        and cfg.ablation.closing_radii != (0,)
+    ):
+        raise ValueError(
+            "Exact hole proposals should use closing_radii=(0,)."
+        )

@@ -26,11 +26,24 @@ class Roles:
     role_hog: torch.Tensor
     role_holes: torch.Tensor
 
+def hole_feature_length(
+    hole_k_shape: int,
+    ablation_cfg: RobustHoleConfig,
+) -> int:
+    base_length = hole_k_shape + 6
 
+    pyramid_length = sum(
+        level * level
+        for level in ablation_cfg.pyramid_levels
+    )
+
+    return base_length + pyramid_length
+    
 def fit_encoders(
     feats: FeatureBatch,
     run_cfg: RunConfig,
     hole_cfg: HoleConfig,
+    ablation_cfg: RobustHoleConfig,
 ) -> Encoders:
     enc_z = RandomProjEncoderTorch(
         D=run_cfg.dim,
@@ -49,7 +62,10 @@ def fit_encoders(
     enc_holes = HoleSetHDCTorch(
         D=run_cfg.dim,
         Q=hole_cfg.Q,
-        k=hole_cfg.feature_length,
+        k=hole_feature_length(
+            hole_k_shape=hole_cfg.k_shape,
+            ablation_cfg=ablation_cfg,
+        ),
         seed=123,
         device=run_cfg.device,
     ).fit_scaler(feats.HFEATS)
