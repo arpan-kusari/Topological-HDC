@@ -7,7 +7,7 @@ name = "topo-hdc"
 version = "0.1.0"
 description = "Topology-guided HDC experiments (offline NeurIPS runner)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10, <3.12"
 license = { text = "MIT" }
 authors = [{ name = "Anonymous", email = "anon@example.com" }]
 
@@ -15,13 +15,14 @@ dependencies = [
   "numpy",
   "scipy",
   "scikit-image",
-  "tensorflow",
   "matplotlib",
   "mahotas",
   "scikit-learn",
   "seaborn",
   "opencv-python",
   "joblib",
+  "medmnist",
+  "giotto-tda",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +33,7 @@ torch-cpu = [
 ]
 
 # Keep CUDA torch here as well, but install using the PyTorch wheel index URL (see instructions below).
-torch-cu124 = [
+torch-cu121 = [
   "torch",
   "torchvision",
 ]

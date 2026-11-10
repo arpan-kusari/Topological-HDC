@@ -1,13 +1,14 @@
 numpy
 scipy
 scikit-image
-tensorflow
 matplotlib
 mahotas
 scikit-learn
 seaborn
 opencv-python
 joblib
+medmnist
+giotto-tda
 
 [dev]
 pytest
@@ -18,6 +19,6 @@ black
 torch
 torchvision
 
-[torch-cu124]
+[torch-cu121]
 torch
 torchvision

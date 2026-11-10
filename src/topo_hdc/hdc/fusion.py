@@ -13,19 +13,42 @@ def cosine_scores(Hb_int8, protos_i32):
     return (Hf @ Pf.T) / (Hn * Pn)  # (B,C)
     
 @torch.no_grad()
+def make_early_fusion_generator(generators: dict, channels: list[str]):
+    """
+    Wraps individual channel batch generators, forwards configuration parameters 
+    like shuffle, and concatenates their hypervector outputs along the feature dimension.
+    """
+    def combined_generator(*args, **kwargs):
+        # Instantiate the underlying generator iterators, passing shuffle/etc. down
+        gen_iters = {ch: generators[ch](*args, **kwargs) for ch in channels}
+        
+        while True:
+            try:
+                hx_batches = {ch: next(gen_iters[ch]) for ch in channels}
+                # Unpack the batch signature (idxb, Hb) from each channel
+                # All channels share identical sample indices (idxb), so grab from the first one
+                idxb = hx_batches[channels[0]][0]
+                
+                # Extract the hypervector tensors (index 1) and concatenate them
+                Hb_concat = torch.cat([hx_batches[ch][1] for ch in channels], dim=-1)
+                
+                yield idxb, Hb_concat
+            except StopIteration:
+                break
+    return combined_generator
+    
+@torch.no_grad()
 def predict_late_fusion_batched(
     generators, 
     protos, 
     alpha:float = 0.0, 
     beta:float = 0.0, 
-    topology_model: TopologyCompatibilityModel | None=None, 
-    hole_counts:np.ndarray| None=None, 
     N:int | None=None,
 ) -> np.ndarray:
     """
     Hhog_batches: yields (key, Hh) int8
-    Hz_batches:   yields (key, Hz) int8  (same keys, same order)
-    alpha=0 disables Zernike.
+    Hfm_batches:   yields (key, Hfm) int8  (same keys, same order)
+    alpha=0 disables FMT.
     Returns numpy preds length N (if N provided and keys are indices),
     else concatenates in yielded order.
     """
@@ -33,55 +56,35 @@ def predict_late_fusion_batched(
         raise ValueError(
             "N must be provided when using indexed batch generators"
         )
-    if beta != 0.0:
-        if topology_model is None:
-            raise ValueError(
-                "topology_model is required when beta is nonzero."
-            )
-        if hole_counts is None:
-            raise ValueError(
-                "hole_counts is required when beta is nonzero."
-            )
-        topology_scores_all = topology_compatibility_scores(
-            hole_counts=hole_counts,
-            model=topology_model,
-        )
-    else:
-        topology_scores_all = None
         
     preds = []
     out = None
     
     Hhog_batches = generators["hog"](shuffle=False)
-    Hz_batches = generators["zernike"](shuffle=False)
-    Hholes_batches = generators["holes"](shuffle=False)
+    Hfm_batches = generators["fourier_mellin"](shuffle=False)
+    Hpi_batches = generators["persistent_image"](shuffle=False)
     
     protos_h = protos["hog"]
-    protos_z = protos["zernike"]
-    protos_holes = protos["holes"]
+    protos_fm = protos["fourier_mellin"]
+    protos_pi = protos["persistent_image"]
 
 
-    for (key_h, Hh), (key_z, Hz), (key_o, Hholes) in zip(
+    for (key_h, Hh), (key_fm, Hfm), (key_pi, Hpi) in zip(
         Hhog_batches,
-        Hz_batches,
-        Hholes_batches,
+        Hfm_batches,
+        Hpi_batches,
     ):
         # sanity: same batch alignment
-        if isinstance(key_h, (int, np.integer)) and isinstance(key_z, (int, np.integer)) and isinstance(key_o, (int, np.integer)):
-            assert int(key_h) == int(key_z) == int(key_o)
+        if isinstance(key_h, (int, np.integer)) and isinstance(key_fm, (int, np.integer)) and isinstance(key_pi, (int, np.integer)):
+            assert int(key_h) == int(key_fm) == int(key_pi)
         # compute scores
         s = cosine_scores(Hh, protos_h)
         if alpha != 0.0:
-            sz = cosine_scores(Hz, protos_z)
-            s = s + float(alpha) * sz
+            s_fm = cosine_scores(Hfm, protos_fm)
+            s = s + float(alpha) * s_fm
         if beta != 0.0:
-            topology_scores = torch.as_tensor(
-                topology_scores_all[idx_h],
-                dtype=scores.dtype,
-                device=scores.device,
-            )
-            # so = cosine_scores(Hholes, protos_holes)
-            s = s + float(beta) * topology_scores
+            s_pi = cosine_scores(Hpi, protos_pi)
+            s = s + float(beta) * s_pi
         pb = torch.argmax(s, dim=1).cpu().numpy()
 
         if N is None:
@@ -221,7 +224,7 @@ def collect_channel_scores(
     num_samples: int,
 ) -> dict[str, np.ndarray]:
     """
-    Collect HOG and Zernike class-score matrices.
+    Collect HOG, Fourier-Mellin, Persistent-Image class-score matrices.
 
     Required generator interface
     ----------------------------
@@ -233,10 +236,10 @@ def collect_channel_scores(
     dict[str, np.ndarray]
         {
             "hog":      array of shape (N, C),
-            "zernike":  array of shape (N, C),
+            "fourier_mellin":  array of shape (N, C),
         }
     """
-    required_channels = ("hog", "zernike")
+    required_channels = ("hog", "fourier_mellin", "persistent_image")
 
     missing_generators = set(required_channels) - set(generators)
     missing_prototypes = set(required_channels) - set(protos)
@@ -324,7 +327,6 @@ def collect_channel_scores(
 
 def tune_cached_fusion(
     channel_scores: Mapping[str, np.ndarray],
-    topology_scores: np.ndarray,
     y_val: np.ndarray,
     run_cfg: RunConfig,
 ) -> tuple[dict[str, float], list[dict[str, float]]]:
@@ -350,13 +352,13 @@ def tune_cached_fusion(
         dtype=np.float32,
     )
 
-    zernike_scores = np.asarray(
-        channel_scores["zernike"],
+    fmt_scores = np.asarray(
+        channel_scores["fourier_mellin"],
         dtype=np.float32,
     )
 
-    topology_scores = np.asarray(
-        topology_scores,
+    pi_scores = np.asarray(
+        channel_scores["persistent_image"],
         dtype=np.float32,
     )
 
@@ -369,8 +371,8 @@ def tune_cached_fusion(
         )
 
     for name, scores in (
-        ("zernike", zernike_scores),
-        ("topology", topology_scores),
+        ("fourier_mellin", fmt_scores),
+        ("persistent_image", pi_scores),
     ):
         if scores.shape != expected_shape:
             raise ValueError(
@@ -391,8 +393,8 @@ def tune_cached_fusion(
         for beta in run_cfg.betas:
             fused_scores = (
                 hog_scores
-                + float(alpha) * zernike_scores
-                + float(beta) * topology_scores
+                + float(alpha) * fmt_scores
+                + float(beta) * pi_scores
             )
 
             predictions = fused_scores.argmax(axis=1)
@@ -420,7 +422,6 @@ def tune_cached_fusion(
     
 def tune_alpha_cached(
     channel_scores: Mapping[str, np.ndarray],
-    topology_scores: np.ndarray,
     y_val: np.ndarray,
     run_cfg: RunConfig,
     beta: float | None = None,
@@ -437,25 +438,25 @@ def tune_alpha_cached(
         channel_scores["hog"],
         dtype=np.float32,
     )
-    zernike_scores = np.asarray(
-        channel_scores["zernike"],
+    fmt_scores = np.asarray(
+        channel_scores["fourier_mellin"],
         dtype=np.float32,
     )
-    topology_scores = np.asarray(
-        topology_scores,
+    pi_scores = np.asarray(
+        channel_scores["persistent_image"],
         dtype=np.float32,
     )
 
-    if zernike_scores.shape != hog_scores.shape:
+    if fmt_scores.shape != hog_scores.shape:
         raise ValueError(
-            "HOG and Zernike score shapes do not match: "
-            f"{hog_scores.shape} versus {zernike_scores.shape}."
+            "HOG and Fourier-Mellin score shapes do not match: "
+            f"{hog_scores.shape} versus {fmt_scores.shape}."
         )
 
-    if topology_scores.shape != hog_scores.shape:
+    if pi_scores.shape != hog_scores.shape:
         raise ValueError(
-            "HOG and topology score shapes do not match: "
-            f"{hog_scores.shape} versus {topology_scores.shape}."
+            "HOG and persistent-image score shapes do not match: "
+            f"{hog_scores.shape} versus {pi_scores.shape}."
         )
 
     if len(y_val) != hog_scores.shape[0]:
@@ -474,7 +475,7 @@ def tune_alpha_cached(
     # This term does not change while alpha is searched.
     fixed_scores = (
         hog_scores
-        + beta * topology_scores
+        + beta * pi_scores
     )
 
     for alpha in run_cfg.alphas:
@@ -482,7 +483,7 @@ def tune_alpha_cached(
 
         fused_scores = (
             fixed_scores
-            + alpha * zernike_scores
+            + alpha * fmt_scores
         )
 
         predictions = fused_scores.argmax(axis=1)
@@ -514,52 +515,51 @@ def tune_alpha_cached(
 
 def predict_from_cached_scores(
     channel_scores: Mapping[str, np.ndarray],
-    topology_scores: np.ndarray,
     alpha: float,
     beta: float,
 ) -> np.ndarray:
     """
-    Predict using HOG, Zernike, and topology-compatibility scores.
+    Predict using HOG, Fourier-Mellin, and persistent-image scores.
 
     Parameters
     ----------
     alpha:
-        Zernike score weight.
+        FMT score weight.
 
     beta:
-        Topology-compatibility score weight.
+        PI score weight.
     """
     hog_scores = np.asarray(
         channel_scores["hog"],
         dtype=np.float32,
     )
 
-    zernike_scores = np.asarray(
-        channel_scores["zernike"],
+    fmt_scores = np.asarray(
+        channel_scores["fourier_mellin"],
         dtype=np.float32,
     )
 
-    topology_scores = np.asarray(
-        topology_scores,
+    pi_scores = np.asarray(
+        channel_scores["persistent_image"],
         dtype=np.float32,
     )
 
-    if zernike_scores.shape != hog_scores.shape:
+    if fmt_scores.shape != hog_scores.shape:
         raise ValueError(
-            "HOG and Zernike score shapes do not match: "
-            f"{hog_scores.shape} versus {zernike_scores.shape}."
+            "HOG and fmt score shapes do not match: "
+            f"{hog_scores.shape} versus {fmt_scores.shape}."
         )
 
-    if topology_scores.shape != hog_scores.shape:
+    if pi_scores.shape != hog_scores.shape:
         raise ValueError(
-            "HOG and topology score shapes do not match: "
-            f"{hog_scores.shape} versus {topology_scores.shape}."
+            "HOG and pi score shapes do not match: "
+            f"{hog_scores.shape} versus {pi_scores.shape}."
         )
 
     fused_scores = (
         hog_scores
-        + float(alpha) * zernike_scores
-        + float(beta) * topology_scores
+        + float(alpha) * fmt_scores
+        + float(beta) * pi_scores
     )
 
     return fused_scores.argmax(axis=1).astype(np.int64)

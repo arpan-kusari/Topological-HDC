@@ -12,7 +12,7 @@ import numpy as np
 from topo_hdc.features.extractor import FeatureBatch
 
 
-FEATURE_CACHE_VERSION = 1
+FEATURE_CACHE_VERSION = 2
 
 def _json_safe(value: Any) -> Any:
     if is_dataclass(value):
@@ -75,15 +75,9 @@ def save_feature_batch(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
-        "Fz": np.asarray(features.Fz, dtype=np.float32),
         "Fh": np.asarray(features.Fh, dtype=np.float32),
-        "HF": np.asarray(features.HF, dtype=np.float32),
-        "M": np.asarray(features.M, dtype=np.float32),
-        "HFEATS": np.asarray(features.HFEATS, dtype=np.float32),
-        "hole_counts": np.asarray(
-            features.hole_counts,
-            dtype=np.int64,
-        ),
+        "Ffm": np.asarray(features.Ffm, dtype=np.float32),
+        "Fpi": np.asarray(features.Fpi, dtype=np.float32),
         "metadata_json": np.asarray(
             json.dumps(
                 {
@@ -115,12 +109,9 @@ def load_feature_batch(
 
     with np.load(path, allow_pickle=False) as archive:
         required = {
-            "Fz",
             "Fh",
-            "HF",
-            "M",
-            "HFEATS",
-            "hole_counts",
+            "Ffm",
+            "Fpi",
             "metadata_json",
         }
 
@@ -133,18 +124,9 @@ def load_feature_batch(
             )
 
         features = FeatureBatch(
-            Fz=archive["Fz"].astype(np.float32, copy=False),
             Fh=archive["Fh"].astype(np.float32, copy=False),
-            HF=archive["HF"].astype(np.float32, copy=False),
-            M=archive["M"].astype(np.float32, copy=False),
-            HFEATS=archive["HFEATS"].astype(
-                np.float32,
-                copy=False,
-            ),
-            hole_counts=archive["hole_counts"].astype(
-                np.int64,
-                copy=False,
-            ),
+            Ffm=archive["Ffm"].astype(np.float32, copy=False),
+            Fpi=archive["Fpi"].astype(np.float32, copy=False),
         )
 
         metadata = json.loads(str(archive["metadata_json"].item()))
@@ -156,13 +138,12 @@ def load_feature_batch(
 
 def validate_feature_batch(features: FeatureBatch) -> None:
     """Check that all sample-level arrays have consistent dimensions."""
-    num_samples = features.Fz.shape[0]
+    num_samples = features.Fh.shape[0]
 
     sample_arrays = {
         "Fh": features.Fh,
-        "HF": features.HF,
-        "M": features.M,
-        "hole_counts": features.hole_counts,
+        "Ffm": features.Ffm,
+        "Fpi": features.Fpi,
     }
 
     for name, array in sample_arrays.items():
@@ -172,40 +153,20 @@ def validate_feature_batch(features: FeatureBatch) -> None:
                 f"expected {num_samples}."
             )
 
-    if features.Fz.ndim != 2:
-        raise ValueError(
-            f"Fz must have shape (N, F); got {features.Fz.shape}."
-        )
 
     if features.Fh.ndim != 2:
         raise ValueError(
             f"Fh must have shape (N, F); got {features.Fh.shape}."
         )
-
-    if features.HF.ndim != 3:
+        
+    if features.Ffm.ndim != 2:
         raise ValueError(
-            f"HF must have shape (N, Hmax, k); got {features.HF.shape}."
+            f"Ffm must have shape (N, F); got {features.Ffm.shape}."
         )
 
-    if features.M.shape != features.HF.shape[:2]:
+    if features.Fpi.ndim != 2:
         raise ValueError(
-            f"Mask shape {features.M.shape} does not match "
-            f"HF shape {features.HF.shape[:2]}."
-        )
-
-    if features.HFEATS.ndim != 2:
-        raise ValueError(
-            "HFEATS must have shape (number_of_holes, feature_length); "
-            f"got {features.HFEATS.shape}."
-        )
-
-    if (
-        features.HFEATS.shape[0] > 0
-        and features.HFEATS.shape[1] != features.HF.shape[2]
-    ):
-        raise ValueError(
-            f"HFEATS length {features.HFEATS.shape[1]} does not match "
-            f"HF length {features.HF.shape[2]}."
+            f"Fpi must have shape (N, F); got {features.Fpi.shape}."
         )
 
 def make_feature_cache_key(
@@ -216,6 +177,7 @@ def make_feature_cache_key(
     zernike_cfg,
     hole_cfg,
     ablation_cfg,
+    persistence_cfg,
     corruption_cfg=None,
 ) -> tuple[str, dict[str, Any]]:
     identity = {
@@ -249,6 +211,7 @@ def load_or_compute_features(
     zernike_cfg,
     hole_cfg,
     ablation_cfg,
+    persistence_cfg,
     corruption_cfg,
     compute_fn: Callable[[], FeatureBatch],
     use_cache: bool = True,
@@ -262,6 +225,7 @@ def load_or_compute_features(
         hole_cfg=hole_cfg,
         ablation_cfg=ablation_cfg,
         corruption_cfg=corruption_cfg,
+        persistence_cfg=persistence_cfg,
     )
 
     cache_path = (
@@ -282,12 +246,7 @@ def load_or_compute_features(
                 "Delete the cache or force recomputation."
             )
 
-        if features.Fz.shape[0] != len(X):
-            raise ValueError(
-                f"Cached {split_name} features contain "
-                f"{features.Fz.shape[0]} samples, but the current split "
-                f"contains {len(X)}."
-            )
+        
 
         return features
 
@@ -295,12 +254,6 @@ def load_or_compute_features(
 
     features = compute_fn()
     validate_feature_batch(features)
-
-    if features.Fz.shape[0] != len(X):
-        raise ValueError(
-            f"Computed {features.Fz.shape[0]} feature rows for "
-            f"{len(X)} input images."
-        )
 
     if use_cache:
         save_feature_batch(

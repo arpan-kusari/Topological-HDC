@@ -1,4 +1,3 @@
-from tensorflow.keras.datasets import mnist
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -9,7 +8,12 @@ from skimage.filters import gaussian
 from medmnist import PathMNIST
  
 def load_mnist():
-    (X_train, y_train), (X_test, y_test) = mnist.load_data()
+    train_dataset = datasets.MNIST(root='./data', train=True, download=True)
+    test_dataset = datasets.MNIST(root='./data', train=False, download=True)
+    
+    # Convert to NumPy arrays to mimic TensorFlow's output format: (x_train, y_train), (x_test, y_test)
+    X_train, y_train = train_dataset.data.numpy(), train_dataset.targets.numpy()
+    X_test, y_test = test_dataset.data.numpy(), test_dataset.targets.numpy()
     return X_train, y_train, X_test, y_test
     
 def load_emnist():

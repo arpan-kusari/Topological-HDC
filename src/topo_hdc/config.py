@@ -69,6 +69,11 @@ class ZernikeConfig:
     pad:int =2
     
 @dataclass(frozen=True)
+class PersistenceImageConfig:
+    nbins: int = 20
+    sigma: float = 0.05
+    
+@dataclass(frozen=True)
 class FusionConfig:
     alpha_min: float = 0.0
     alpha_max: float = 1.0
@@ -106,6 +111,7 @@ class ExperimentConfig:
     fusion: FusionConfig
     plot: PlotConfig
     features: FeatureConfig
+    persistence: PersistenceImageConfig
     out_dir: Path
 
 

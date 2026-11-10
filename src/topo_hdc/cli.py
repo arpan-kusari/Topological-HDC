@@ -1,5 +1,6 @@
 # src/topo_hdc/cli.py
 
+import torch
 import argparse
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from topo_hdc.config import (
     FusionConfig,
     PlotConfig,
     FeatureConfig,
+    PersistenceImageConfig,
     ExperimentConfig,
     validate_config,
 )
@@ -76,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beta-min", type=float, default=0.0)
     parser.add_argument("--beta-max", type=float, default=1.0)
     parser.add_argument("--beta-step", type=float, default=0.1)
+    
+    # Persistence settings
+    parser.add_argument("--nbins", type=int, default=20)
+    parser.add_argument("--persistence-sigma", type=float, default=0.05)
 
     # Output/cache
     parser.add_argument("--out-dir", type=str, default="runs/mnist")
@@ -180,6 +186,11 @@ def main() -> None:
         force_recompute=args.force_recompute_features,
         n_jobs=args.n_jobs,
     )
+    
+    persistence_cfg = PersistenceImageConfig(
+        nbins=args.nbins,
+        sigma=args.persistence_sigma,
+    )
 
     cfg = ExperimentConfig(
         run=run_cfg,
@@ -192,6 +203,7 @@ def main() -> None:
         features=feature_cfg,
         ablation_name=args.ablation,
         ablation=ablation_cfg,
+        persistence=persistence_cfg,
         out_dir=Path(args.out_dir),
     )
 

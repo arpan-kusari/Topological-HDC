@@ -73,17 +73,20 @@ def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
     zoom>1: zoom in (crop center, then resize back)
     zoom<1: zoom out (shrink, then pad into canvas)
     img: HxW
-    returns out_size x out_size
+    returns out_size x out_size (perfectly matched float32)
     """
     x = img.astype(np.float32)
     H, W = x.shape
     assert H == W, "expected square image"
 
     if zoom == 1.0:
+        # Guarantee layout matching if resizing is bypassed
+        if H != out_size:
+            return resize(x, (out_size, out_size), order=order,
+                          anti_aliasing=True, preserve_range=True).astype(np.float32)
         return x.copy()
-
     if zoom > 1.0:
-        # crop center
+        # Crop center
         crop_size = int(round(H / zoom))
         crop_size = max(1, min(H, crop_size))
         y0 = (H - crop_size) // 2
@@ -93,15 +96,21 @@ def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
                    anti_aliasing=True, preserve_range=True).astype(np.float32)
         return z
 
-    # zoom < 1.0: shrink then pad
-    small_size = int(round(H * zoom))
-    small_size = max(1, small_size)
+    # ZOOM < 1.0: Shrink then pad into a floating point canvas
+    small_size = int(round(out_size * zoom))  # Calculate scale relative to out_size layout
+    small_size = max(1, min(out_size, small_size))
+    
     small = resize(x, (small_size, small_size), order=order,
                    anti_aliasing=True, preserve_range=True).astype(np.float32)
 
-    canvas = np.zeros((out_size, out_size), dtype=np.uint8)
-    y0 = int((out_size - small_size) // 2)
-    x0 = int((out_size - small_size) // 2)
+    # FIX 1: Initialize canvas as np.float32 to preserve continuous pixel intensities!
+    canvas = np.zeros((out_size, out_size), dtype=np.float32)
+    
+    # Center placement offsets
+    y0 = (out_size - small_size) // 2
+    x0 = (out_size - small_size) // 2
+    
+    # FIX 2: Explicitly match assignment lengths to handle rounding offsets safely
     canvas[y0:y0+small_size, x0:x0+small_size] = small
     return canvas
     

@@ -1,0 +1,17 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*Spy.class
+cache/
+data/
+runs/
+
+# Ignore build and packaging metadata
+*.egg-info/
+.egg-info/
+pkg-info/
+PKG-INFO
+
+# Ignore local virtual environment
+.topo-hdc-env/
+

@@ -15,16 +15,16 @@ from topo_hdc.features.extractor import FeatureBatch
 
 @dataclass
 class Encoders:
-    enc_z: RandomProjEncoderTorch
     enc_h: RandomProjEncoderTorch
-    enc_holes: HoleSetHDCTorch
+    enc_fmt: RandomProjEncoderTorch
+    enc_pi: RandomProjEncoderTorch
 
 
 @dataclass
 class Roles:
-    role_outer: torch.Tensor
     role_hog: torch.Tensor
-    role_holes: torch.Tensor
+    role_fmt: torch.Tensor
+    role_pi: torch.Tensor
 
 def hole_feature_length(
     hole_k_shape: int,
@@ -45,59 +45,53 @@ def fit_encoders(
     hole_cfg: HoleConfig,
     ablation_cfg: RobustHoleConfig,
 ) -> Encoders:
-    enc_z = RandomProjEncoderTorch(
-        D=run_cfg.dim,
-        seed=1,
-        device=run_cfg.device,
-    ).fit(feats.Fz)
 
     enc_h = RandomProjEncoderTorch(
         D=run_cfg.dim,
         seed=2,
         device=run_cfg.device,
     ).fit(feats.Fh)
-
-    # Use flattened hole features to fit the hole scaler/quantizer.
-    # feats.HFEATS should have shape (num_total_holes, hole_cfg.feature_length).
-    enc_holes = HoleSetHDCTorch(
+    
+    enc_fmt = RandomProjEncoderTorch(
         D=run_cfg.dim,
-        Q=hole_cfg.Q,
-        k=hole_feature_length(
-            hole_k_shape=hole_cfg.k_shape,
-            ablation_cfg=ablation_cfg,
-        ),
-        seed=123,
+        seed=3,
         device=run_cfg.device,
-    ).fit_scaler(feats.HFEATS)
+    ).fit(feats.Ffm)
+    
+    enc_pi = RandomProjEncoderTorch(
+        D=run_cfg.dim,
+        seed=4,
+        device=run_cfg.device,
+    ).fit(feats.Fpi)
 
     return Encoders(
-        enc_z=enc_z,
         enc_h=enc_h,
-        enc_holes=enc_holes,
+        enc_fmt=enc_fmt,
+        enc_pi=enc_pi,
     )
 
 
 def get_role(run_cfg: RunConfig) -> Roles:
-    role_outer = rand_bipolar(
-        D=run_cfg.dim,
-        seed=999,
-        device=run_cfg.device,
-    )
-
     role_hog = rand_bipolar(
         D=run_cfg.dim,
         seed=1000,
         device=run_cfg.device,
     )
-
-    role_holes = rand_bipolar(
+    
+    role_fmt = rand_bipolar(
         D=run_cfg.dim,
-        seed=1001,
+        seed=1002,
+        device=run_cfg.device,
+    )
+    
+    role_pi = rand_bipolar(
+        D=run_cfg.dim,
+        seed=1003,
         device=run_cfg.device,
     )
 
     return Roles(
-        role_outer=role_outer,
         role_hog=role_hog,
-        role_holes=role_holes,
+        role_fmt=role_fmt,
+        role_pi=role_pi,
     )

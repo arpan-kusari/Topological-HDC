@@ -1,5 +1,5 @@
 from scipy.interpolate import splprep, splev
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, center_of_mass
 from skimage.filters import threshold_otsu, threshold_local, gaussian
 from skimage.morphology import closing, opening, remove_small_objects, disk, closing
 from skimage.measure import label, regionprops, find_contours
@@ -9,6 +9,9 @@ from skimage.feature import hog
 import numpy as np
 from dataclasses import dataclass
 from topo_hdc.config import RobustHoleConfig
+from gtda.homology import CubicalPersistence
+from gtda.images import HeightFiltration
+from gtda.diagrams import PersistenceImage
 
 @dataclass
 class HoleCandidate:
@@ -103,6 +106,140 @@ class ProcessImage:
         norm = self.crop_and_normalize_gray_bbox(bbox, out_size=out_size)
         # keep values in [0,1]
         return np.clip(norm, 0.0, 1.0).astype(np.float32)
+        
+    def fourier_mellin_descriptor(self, out_size=64, num_rho=32, num_theta=64):
+        """
+        Computes a Rotation, Translation, and Scale (RTS) invariant 
+        Fourier-Mellin descriptor directly from the normalized gray glyph.
+        Returns a flat 1D float64 feature vector.
+        """
+        # 1. Normalize glyph to handle baseline centering/scale
+        norm = self.normalize_glyph_gray(out_size=out_size)
+        # 2. Build Log-Polar Coordinate Grid around the image center
+        h, w = norm.shape
+        cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+        max_r = np.hypot(cy, cx)
+        # Logarithmic mapping for radius, linear for angle
+        rhos = np.logspace(0, np.log10(max_r), num_rho)
+        thetas = np.linspace(0, 2 * np.pi, num_theta, endpoint=False)
+        
+        rho_grid, theta_grid = np.meshgrid(rhos, thetas, indexing='ij')
+        # Map back to Cartesian coordinates to sample the patch
+        ys = cy + rho_grid * np.sin(theta_grid)
+        xs = cx + rho_grid * np.cos(theta_grid)
+        
+        # Clip coordinates safely inside image bounds
+        ys = np.clip(ys, 0, h - 1).astype(int)
+        xs = np.clip(xs, 0, w - 1).astype(int)
+        
+        log_polar_img = norm[ys, xs]
+        # 3. Compute 2D FFT Magnitude to achieve shift invariance 
+        # (which maps back to Scale/Rotation invariance in log-polar space)
+        f_transform = np.fft.fft2(log_polar_img)
+        f_magnitude = np.abs(f_transform)
+        
+        # Flatten into a continuous descriptor vector for HDC encoding
+        return f_magnitude.flatten().astype(np.float64)
+        
+#    def persistent_image_descriptor(self, cfg: RobustHoleConfig, grid_size=20, sigma=None, num_angles=8):
+#        """
+#        Extracts directional spoke-wheel topological features across closing scales 
+#        and converts them into a concatenated Persistent Image vector.
+#        """
+#        foreground = np.asarray(self.bw, dtype=bool)
+#        if not foreground.any():
+#            return np.zeros(num_angles * grid_size * grid_size, dtype=np.float64)
+#            
+#        # 1. Calculate Center of Mass to serve as the spoke wheel axle
+#        cy, cx = center_of_mass(foreground)
+#        height, width = foreground.shape
+#        
+#        # 2. Define angles for the spokes (e.g., 0, 45, 90, 135 degrees)
+#        angles = np.linspace(0, np.pi, num_angles, endpoint=False)
+#        
+#        # Pre-calculate relative pixel coordinates from the center of mass
+#        y_indices, x_indices = np.indices((height, width))
+#        rel_y = y_indices - cy
+#        rel_x = x_indices - cx
+#        
+#        radii = sorted(cfg.closing_radii)
+#        max_r = max(radii) if radii else 3 #TODO
+#        
+#        # We will accumulate flattened persistent images for each direction
+#        directional_vectors = []
+#        
+#        # 3. Perform a directional spoke wheel sweep for each angle
+#        for theta in angles:
+#            # Project relative coordinates onto the current spoke vector orientation
+#            # This gives a 1D spatial "filtration coordinate" for every pixel
+#            projected_coords = rel_x * np.cos(theta) + rel_y * np.sin(theta)
+#            
+#            # Capture the ink intensity paired with its spatial location
+#            ink_pixels = foregound > 0.1
+#            
+#            if not ink_pixels.any():
+#                directional_vectors.append(np.zeros(grid_size * grid_size, dtype=np.float64))
+#                
+#            # physical locations of ink along this specific route
+#            spatial_locations = projected_coords[ink_pixels]
+#            ink_intensities = foreground[ink_pixels]
+#            
+#            # 4. Rasterize onto a fixed 2D grid
+#            # Set spatial boundary limits based on the maximum possible distance from center of mass
+#            max_dist = np.sqrt((height/2)**2 + (width/2)**2)
+#            b_bins = np.linspace(-max_dist, max_dist, grid_size)
+#            p_bins = np.linspace(0.0, 1.0, grid_size)
+#            
+#            # Auto-tune sigma if not provided, ensuring it maps to grid cell step size
+#            if sigma is None:
+#                b_step = (2 * max_dist) / grid_size
+#                current_sigma = b_step * 0.5  # Smoothly influences immediate neighbors
+#            else:
+#                current_sigma = sigma
+#                
+#            pi_matrix = np.zeros((grid_size, grid_size), dtype=np.float64)
+#            
+#            for b, p in zip(spatial_locations, ink_intensities):
+#                for i in range(grid_size):
+#                    for j in range(grid_size):
+#                        dist_sq = (b_bins[i] - b)**2 + (p_bins[j] - p)**2
+#                        weight = p # Weight linearly by morphological persistence scale
+#                        pi_matrix[i, j] += weight * np.exp(-dist_sq / (2.0 * current_sigma**2))
+#                        
+#            directional_vectors.append(pi_matrix.flatten())
+#            
+#        # Concatenate all directions into a single spatial-topological descriptor vector
+#        return np.concatenate(directional_vectors).astype(np.float64)
+
+    def persistent_image_descriptor(self, cfg: RobustHoleConfig):
+        # Apply a directional Height Filtration to create a topological scalar field
+        # This extracts spatial shape information along a specific axis
+        # 1. Define multiple directions to capture all angles
+        direction_list = [
+            np.array([1, 0]), 
+            np.array([0, 1]), 
+            np.array([1, 1]), 
+            np.array([1, -1])
+        ]
+
+        single_image = self.bw.reshape((1, 28, 28))
+        # We will collect the diagrams for each direction
+        diagrams_for_this_image = []
+        cp = CubicalPersistence(homology_dimensions=[0, 1], n_jobs=-1)
+
+        # 3. Loop through directions to avoid the list TypeError
+        for d in direction_list:
+            hf = HeightFiltration(direction=d)
+            filtered_digit = hf.fit_transform(single_image)
+            persistence_diagrams = cp.fit_transform(filtered_digit)
+            
+            # persistence_diagrams has shape (1, n_points, 3). 
+            # We take [0] to extract the diagram for this specific image sample.
+            diagrams_for_this_image.append(persistence_diagrams[0])
+            
+        # Return the raw diagrams list so we can apply a global coordinate grid outside
+        return diagrams_for_this_image
+        
 
     # ----------------------------
     # Step 2. Extract contours (outer + holes)

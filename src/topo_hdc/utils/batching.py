@@ -59,10 +59,34 @@ def make_hv_generators(features, encoders, roles, batch_size):
             Hholes = bind(Hholes, roles.role_holes)
 
             yield idxb, Hholes
+            
+    @torch.no_grad()
+    def fourier_mellin_batches(shuffle=False, seed=0):
+        N = features.Ffm.shape[0]
+
+        for idxb in iter_index_batches(N, batch_size, shuffle=shuffle):
+            Hfm = encoders.enc_fmt.encode_batch(
+                features.Ffm[idxb],
+                batch_size=batch_size,
+            )
+            Hfm = bind(Hfm, roles.role_fmt)
+            yield idxb, Hfm
+            
+    @torch.no_grad()
+    def persistent_image_batches(shuffle=False, seed=0):
+        N = features.Fpi.shape[0]
+
+        for idxb in iter_index_batches(N, batch_size, shuffle=shuffle):
+            Hpi = encoders.enc_pi.encode_batch(
+                features.Fpi[idxb],
+                batch_size=batch_size,
+            )
+            Hpi = bind(Hpi, roles.role_pi)
+            yield idxb, Hpi
 
     return {
         "hog": hog_batches,
-        "zernike": zernike_batches,
-        "holes": holes_batches,
+        "fourier_mellin": fourier_mellin_batches,
+        "persistent_image": persistent_image_batches,
     }
 
