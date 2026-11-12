@@ -7,9 +7,8 @@ from dataclasses import dataclass
 import torch
 
 from topo_hdc.hdc.RandomProjEncoder import RandomProjEncoderTorch
-from topo_hdc.hdc.HoleSetHDC import HoleSetHDCTorch
 from topo_hdc.utils.Helper_functions import rand_bipolar
-from topo_hdc.config import RunConfig, HoleConfig
+from topo_hdc.config import RunConfig
 from topo_hdc.features.extractor import FeatureBatch
 
 
@@ -42,7 +41,6 @@ def hole_feature_length(
 def fit_encoders(
     feats: FeatureBatch,
     run_cfg: RunConfig,
-    hole_cfg: HoleConfig,
     ablation_cfg: RobustHoleConfig,
 ) -> Encoders:
 

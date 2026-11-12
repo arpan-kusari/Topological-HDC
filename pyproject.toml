@@ -23,6 +23,7 @@ dependencies = [
   "joblib",
   "medmnist",
   "giotto-tda",
+  "cripser",
 ]
 
 [project.optional-dependencies]

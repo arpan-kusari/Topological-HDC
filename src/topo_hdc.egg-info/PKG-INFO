@@ -17,6 +17,7 @@ Requires-Dist: opencv-python
 Requires-Dist: joblib
 Requires-Dist: medmnist
 Requires-Dist: giotto-tda
+Requires-Dist: cripser
 Provides-Extra: torch-cpu
 Requires-Dist: torch; extra == "torch-cpu"
 Requires-Dist: torchvision; extra == "torch-cpu"

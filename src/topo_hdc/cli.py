@@ -8,8 +8,7 @@ from topo_hdc.config import (
     RunConfig,
     DatasetConfig,
     CorruptionConfig,
-    ZernikeConfig,
-    HoleConfig,
+    ImgProcessConfig,
     FusionConfig,
     PlotConfig,
     FeatureConfig,
@@ -57,12 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--saltpepper-p", type=float, default=0.1)
     parser.add_argument("--cutout-size", type=int, default=12)
     parser.add_argument("--zoom", type=float, default=0.75)
-
-    # Hole / topology settings
-    parser.add_argument("--k-shape", type=int, default=12)
-    parser.add_argument("--hole-feature-length", type=int, default=39)
-    parser.add_argument("--hole-q", type=int, default=101)
-    parser.add_argument("--hmax", type=int, default=4)
     
     # Zernike settings
     parser.add_argument("--out-size", type=int, default=64)
@@ -101,9 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ablation",
         type=str,
-        default="A3_spoke_pyramid",
+        default="AO_full",
         choices=sorted(ABLATION_PRESETS),
-        help="Hole-extraction ablation preset.",
+        help="ablation preset.",
     )
     
 
@@ -145,19 +138,12 @@ def main() -> None:
         zoom=args.zoom,
     )
 
-    zernike_cfg = ZernikeConfig(
+    img_cfg = ImgProcessConfig(
         out_size=args.out_size,
         degree=args.degree,
         radius=args.radius,
         grid=args.grid,
         pad=args.pad,
-    )
-
-    hole_cfg = HoleConfig(
-        k_shape=args.k_shape,
-        feature_length=args.hole_feature_length,
-        Q=args.hole_q,
-        Hmax=args.hmax,
     )
     
     fusion_cfg = FusionConfig(
@@ -196,8 +182,7 @@ def main() -> None:
         run=run_cfg,
         data=data_cfg,
         corrupt=corrupt_cfg,
-        zernike=zernike_cfg,
-        holes=hole_cfg,
+        img_process=img_cfg,
         fusion=fusion_cfg,
         plot=plot_cfg,
         features=feature_cfg,

@@ -80,13 +80,11 @@ def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
     assert H == W, "expected square image"
 
     if zoom == 1.0:
-        # Guarantee layout matching if resizing is bypassed
         if H != out_size:
             return resize(x, (out_size, out_size), order=order,
                           anti_aliasing=True, preserve_range=True).astype(np.float32)
         return x.copy()
     if zoom > 1.0:
-        # Crop center
         crop_size = int(round(H / zoom))
         crop_size = max(1, min(H, crop_size))
         y0 = (H - crop_size) // 2
@@ -96,21 +94,16 @@ def zoom_to_canvas(img, zoom=1.2, out_size=28, order=1):
                    anti_aliasing=True, preserve_range=True).astype(np.float32)
         return z
 
-    # ZOOM < 1.0: Shrink then pad into a floating point canvas
-    small_size = int(round(out_size * zoom))  # Calculate scale relative to out_size layout
+    small_size = int(round(out_size * zoom))  
     small_size = max(1, min(out_size, small_size))
     
     small = resize(x, (small_size, small_size), order=order,
                    anti_aliasing=True, preserve_range=True).astype(np.float32)
 
-    # FIX 1: Initialize canvas as np.float32 to preserve continuous pixel intensities!
     canvas = np.zeros((out_size, out_size), dtype=np.float32)
-    
-    # Center placement offsets
     y0 = (out_size - small_size) // 2
     x0 = (out_size - small_size) // 2
     
-    # FIX 2: Explicitly match assignment lengths to handle rounding offsets safely
     canvas[y0:y0+small_size, x0:x0+small_size] = small
     return canvas
     
@@ -125,15 +118,19 @@ def apply_zoom(X_test, zoom):
    
 def apply_corruption(X: np.ndarray, cfg: CorruptionConfig):
     if cfg.kind == "rotation":
-        X = apply_rotation(X_test=X, angle=np.deg2rad(cfg.angle_deg), scale=1)
+        # FIX 1: cv2.getRotationMatrix2D expects angles in DEGREES, not radians
+        X = apply_rotation(X_test=X, angle=cfg.angle_deg, scale=1)
     elif cfg.kind == "gaussian":
         X = apply_gaussian_noise(X_test=X, sigma=cfg.sigma)
     elif cfg.kind == "saltpepper":
-        X = apply_salt_pepper_noise(X_test=X, p=cfg.p)
+        # FIX 2: Dynamically shift xmax depending on integer vs normalized float arrays
+        if np.issubdtype(X.dtype, np.integer):
+            X = apply_salt_pepper_noise(X_test=X, p=cfg.p, xmin=0, xmax=255)
+        else:
+            X = apply_salt_pepper_noise(X_test=X, p=cfg.p, xmin=0.0, xmax=1.0)
     elif cfg.kind == "cutout":
         X = apply_cutout(X_test=X, size=cfg.cutout_size)
     elif cfg.kind == "zoom":
         X = apply_zoom(X_test=X, zoom=cfg.zoom)
     return X
-        
 

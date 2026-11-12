@@ -9,6 +9,7 @@ opencv-python
 joblib
 medmnist
 giotto-tda
+cripser
 
 [dev]
 pytest

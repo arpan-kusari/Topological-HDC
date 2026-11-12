@@ -40,15 +40,13 @@ def run_experiment(cfg) -> dict:
         dataset_name=cfg.data.dataset,
         split_name="train",
         split_seed=cfg.run.seed,
-        zernike_cfg=cfg.zernike,
-        hole_cfg=cfg.holes,
+        img_cfg=cfg.img_process,
         ablation_cfg=cfg.ablation,
         corruption_cfg=None,
         persistence_cfg=cfg.persistence,
         compute_fn=lambda: compute_features(
             X=X_train,
-            z_cfg=cfg.zernike,
-            hole_cfg=cfg.holes,
+            img_cfg=cfg.img_process,
             ablation_cfg=cfg.ablation,
             persistence_cfg=cfg.persistence,
             n_jobs=cfg.run.n_jobs,
@@ -66,15 +64,13 @@ def run_experiment(cfg) -> dict:
         dataset_name=cfg.data.dataset,
         split_name="validation",
         split_seed=cfg.run.seed,
-        zernike_cfg=cfg.zernike,
-        hole_cfg=cfg.holes,
+        img_cfg=cfg.img_process,
         ablation_cfg=cfg.ablation,
         corruption_cfg=None,
         persistence_cfg=cfg.persistence,
         compute_fn=lambda: compute_features(
             X=X_val,
-            z_cfg=cfg.zernike,
-            hole_cfg=cfg.holes,
+            img_cfg=cfg.img_process,
             ablation_cfg=cfg.ablation,
             persistence_cfg=cfg.persistence,
             n_jobs=cfg.run.n_jobs,
@@ -91,15 +87,13 @@ def run_experiment(cfg) -> dict:
         dataset_name=cfg.data.dataset,
         split_name="test",
         split_seed=cfg.run.seed,
-        zernike_cfg=cfg.zernike,
-        hole_cfg=cfg.holes,
+        img_cfg=cfg.img_process,
         ablation_cfg=cfg.ablation,
         corruption_cfg=cfg.corrupt,
         persistence_cfg=cfg.persistence,
         compute_fn=lambda: compute_features(
             X=X_test,
-            z_cfg=cfg.zernike,
-            hole_cfg=cfg.holes,
+            img_cfg=cfg.img_process,
             ablation_cfg=cfg.ablation,
             persistence_cfg=cfg.persistence,
             n_jobs=cfg.run.n_jobs,
@@ -110,9 +104,9 @@ def run_experiment(cfg) -> dict:
         force_recompute=cfg.features.force_recompute,
     )
     
-    train_encoders = fit_encoders(feats=train_feats, run_cfg=cfg.run, hole_cfg=cfg.holes, ablation_cfg=cfg.ablation)
-    val_encoders = fit_encoders(feats=val_feats, run_cfg=cfg.run, hole_cfg=cfg.holes, ablation_cfg=cfg.ablation)
-    test_encoders = fit_encoders(feats=test_feats, run_cfg=cfg.run, hole_cfg=cfg.holes, ablation_cfg=cfg.ablation)
+    train_encoders = fit_encoders(feats=train_feats, run_cfg=cfg.run, ablation_cfg=cfg.ablation)
+    val_encoders = fit_encoders(feats=val_feats, run_cfg=cfg.run, ablation_cfg=cfg.ablation)
+    test_encoders = fit_encoders(feats=test_feats, run_cfg=cfg.run, ablation_cfg=cfg.ablation)
     roles = get_role(run_cfg=cfg.run)
     train_generators = make_hv_generators(features=train_feats, encoders=train_encoders, roles=roles, batch_size=cfg.run.batch_size)
     val_generators = make_hv_generators(features=val_feats, encoders=val_encoders, roles=roles, batch_size=cfg.run.batch_size)
