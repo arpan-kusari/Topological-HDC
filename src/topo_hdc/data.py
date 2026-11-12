@@ -1,10 +1,19 @@
-from tensorflow.keras.datasets import mnist
 from torchvision import datasets, transforms
+import torch
 from sklearn.model_selection import StratifiedShuffleSplit
 import numpy as np
  
-def load_mnist():
-    (X_train, y_train), (X_test, y_test) = mnist.load_data()
+def load_mnist(root="./data"):
+    # Download and load training and test sets
+    train_set = datasets.MNIST(root=root, train=True, download=True)
+    test_set = datasets.MNIST(root=root, train=False, download=True)
+
+    # Convert PyTorch tensors to NumPy arrays matching Keras output format
+    X_train = train_set.data.numpy()       # shape: (60000, 28, 28), dtype: uint8
+    y_train = train_set.targets.numpy()    # shape: (60000,), dtype: int64
+    X_test = test_set.data.numpy()         # shape: (10000, 28, 28), dtype: uint8
+    y_test = test_set.targets.numpy()      # shape: (10000,), dtype: int64
+
     return X_train, y_train, X_test, y_test
     
 def load_emnist():

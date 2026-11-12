@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Dataset
     parser.add_argument("--dataset", type=str, default="mnist")
-    parser.add_argument("--num-classes", type=float, default=10)
+    parser.add_argument("--num-classes", type=int, default=10)
     
 
     # Run settings
