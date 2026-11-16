@@ -44,27 +44,26 @@ def parse_args():
     parser.add_argument("--percent-change", type=float, default=10.0)
 
     parser.add_argument(
-        "--corruptions",
-        nargs="+",
-        choices=(
-            "none",
-            "rotation",
-            "gaussian",
-            "saltpepper",
-            "cutout",
-            "zoom",
-        ),
-        default=[
-            "none",
-            "rotation",
-            "gaussian",
-            "saltpepper",
-            "cutout",
-            "zoom",
-        ],
-        help="Corruptions to evaluate. Defaults to all six conditions.",
-    )default="none",
-        )
+		"--corruptions",
+		nargs="+",
+		choices=(
+		"none",
+		"rotation",
+		"gaussian",
+		"saltpepper",
+		"cutout",
+		"zoom",
+		),
+		default=[
+		"none",
+		"rotation",
+		"gaussian",
+		"saltpepper",
+		"cutout",
+		"zoom",
+		],
+		help="Corruptions to evaluate. Defaults to all six conditions.",
+	)
     parser.add_argument("--angle", type=float, default=20.0)
     parser.add_argument("--sigma", type=float, default=0.1)
     parser.add_argument("--p", type=float, default=0.1)
