@@ -59,9 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
     
     # Zernike settings
     parser.add_argument("--out-size", type=int, default=64)
-    parser.add_argument("--degree", type=int, default=6)
-    parser.add_argument("--radius", type=float, default=20)
-    parser.add_argument("--grid", type=tuple, default=(2,2))
     parser.add_argument("--pad", type=int, default=2)
     
     # Fusion settings
@@ -105,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     
+    parser.add_argument(
+    "--force-recompute-test-features",
+    action="store_true",
+    help=(
+        "Recompute test features only, while reusing cached training "
+        "and validation features when available."
+    ),
+)
+    
 
     return parser
 
@@ -140,9 +146,6 @@ def main() -> None:
 
     img_cfg = ImgProcessConfig(
         out_size=args.out_size,
-        degree=args.degree,
-        radius=args.radius,
-        grid=args.grid,
         pad=args.pad,
     )
     
@@ -170,6 +173,7 @@ def main() -> None:
         cache_dir=Path(args.cache_dir),
         use_cache=not args.no_cache,
         force_recompute=args.force_recompute_features,
+        force_recompute_test=args.force_recompute_test_features,
         n_jobs=args.n_jobs,
     )
     

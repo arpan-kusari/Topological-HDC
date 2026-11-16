@@ -12,6 +12,8 @@ import numpy as np
 from joblib import Parallel, delayed, dump, load
 from scipy.ndimage import gaussian_filter
 from gtda.images import HeightFiltration
+from dataclasses import replace
+from skimage.filters import threshold_otsu
 
 from topo_hdc.config import (
     ImgProcessConfig,
@@ -224,49 +226,38 @@ class FeatureExtractor:
             pad=self.img_cfg.pad,
         )
 
+        # Local appearance channel.
         fh = img_process.hog_descriptor(norm)
 
-        # Preserves the original Fourier--Mellin implementation,
-        # including its separate normalization with default padding.
+        # Global appearance channel.
+        # This still uses its own normalization with default padding.
         ffm = img_process.fourier_mellin_descriptor(
             out_size=self.img_cfg.out_size,
         )
 
-        directions = (
-            np.array([1, 0]),
-            np.array([0, 1]),
-            np.array([1, 1]),
-            np.array([1, -1]),
+        # Explicit binary foreground for the topological channel.
+        # Assumes bright glyphs on a dark background.
+        if norm.max() > norm.min():
+            threshold = threshold_otsu(norm)
+            foreground = norm > threshold
+        else:
+            foreground = np.zeros(norm.shape, dtype=bool)
+
+        # Retain disconnected fragments: cutout can split a valid glyph.
+        img_process.bw = foreground.astype(bool, copy=False)
+
+        # Produce full PI diagrams for cache compatibility.
+        # Direction/homology selection occurs later in run.py.
+        diagram_cfg = replace(
+            self.ablation_cfg,
+            use_pi=True,
+            pi_direction_indices=(0, 1, 2, 3),
+            pi_homology_dims=(0, 1),
         )
 
-        single_image = norm[np.newaxis, ...]
-        diagrams_for_this_image = []
-
-        for direction in directions:
-            filtration = HeightFiltration(direction=direction)
-            filtered_digit = filtration.fit_transform(single_image)
-
-            # Remove the leading sample axis: (1, H, W) -> (H, W).
-            grid_2d = np.ascontiguousarray(
-                filtered_digit[0],
-                dtype=np.float64,
-            )
-
-            if grid_2d.ndim != 2:
-                raise ValueError(
-                    "Expected a 2D filtration grid; "
-                    f"got {grid_2d.shape}."
-                )
-
-            raw_ph = cripser.compute_ph(
-                grid_2d,
-                filtration="V",
-                maxdim=1,
-            )
-
-            diagrams_for_this_image.append(
-                _format_persistence_diagram(raw_ph)
-            )
+        diagrams_for_this_image = (
+            img_process.persistent_image_descriptor(diagram_cfg)
+        )
 
         return (
             np.asarray(fh, dtype=np.float32),

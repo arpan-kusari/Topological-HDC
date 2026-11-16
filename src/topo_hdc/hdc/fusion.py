@@ -2,7 +2,6 @@ import torch
 from topo_hdc.config import RunConfig
 import numpy as np
 from collections.abc import Callable, Mapping
-from topo_hdc.hdc.topology_compatibility import TopologyCompatibilityModel, topology_compatibility_scores
  
 @torch.no_grad()
 def cosine_scores(Hb_int8, protos_i32):
@@ -224,46 +223,53 @@ def collect_channel_scores(
     num_samples: int,
 ) -> dict[str, np.ndarray]:
     """
-    Collect HOG, Fourier-Mellin, Persistent-Image class-score matrices.
+    Collect class-score matrices for active channels only.
 
-    Required generator interface
-    ----------------------------
-    generator(shuffle=False) yields:
-        (sample_indices, hypervectors)
+    Generator interface:
+        generator(shuffle=False) yields (sample_indices, hypervectors)
 
-    Returns
-    -------
-    dict[str, np.ndarray]
-        {
-            "hog":      array of shape (N, C),
-            "fourier_mellin":  array of shape (N, C),
-        }
+    Returns:
+        {channel: float32 array of shape (num_samples, num_classes)}
     """
-    required_channels = ("hog", "fourier_mellin", "persistent_image")
+    if not generators:
+        raise ValueError("At least one active channel is required.")
 
-    missing_generators = set(required_channels) - set(generators)
-    missing_prototypes = set(required_channels) - set(protos)
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive.")
 
-    if missing_generators:
-        raise KeyError(
-            f"Missing generators: {sorted(missing_generators)}"
-        )
+    active_channels = tuple(generators)
 
+    missing_prototypes = set(active_channels) - set(protos)
     if missing_prototypes:
         raise KeyError(
-            f"Missing prototypes: {sorted(missing_prototypes)}"
+            f"Missing prototypes for active channels: "
+            f"{sorted(missing_prototypes)}"
         )
 
-    num_classes = int(protos["hog"].shape[0])
+    # Infer class count from the first active channel, not necessarily HOG.
+    first_channel = active_channels[0]
+    first_prototypes = protos[first_channel]
+
+    if first_prototypes.ndim != 2:
+        raise ValueError(
+            f"Prototypes for {first_channel!r} must have shape (C, D); "
+            f"got {tuple(first_prototypes.shape)}."
+        )
+
+    num_classes = int(first_prototypes.shape[0])
+
+    if num_classes <= 0:
+        raise ValueError("Prototype matrices must contain at least one class.")
+
     outputs: dict[str, np.ndarray] = {}
 
-    for channel in required_channels:
+    for channel in active_channels:
         channel_prototypes = protos[channel]
 
         if channel_prototypes.ndim != 2:
             raise ValueError(
-                f"Prototypes for {channel!r} must be two-dimensional; "
-                f"received shape {tuple(channel_prototypes.shape)}."
+                f"Prototypes for {channel!r} must have shape (C, D); "
+                f"got {tuple(channel_prototypes.shape)}."
             )
 
         if channel_prototypes.shape[0] != num_classes:
@@ -277,24 +283,41 @@ def collect_channel_scores(
             (num_samples, num_classes),
             dtype=np.float32,
         )
+        visited = np.zeros(num_samples, dtype=bool)
 
-        visited = np.zeros(
-            num_samples,
-            dtype=bool,
-        )
-
-        for indices, hypervectors in generators[channel](
-            shuffle=False
-        ):
+        for indices, hypervectors in generators[channel](shuffle=False):
             indices_np = _to_numpy_indices(indices)
 
-            if np.any(indices_np < 0) or np.any(
-                indices_np >= num_samples
-            ):
+            if np.any(indices_np < 0) or np.any(indices_np >= num_samples):
                 raise IndexError(
                     f"Generator for {channel!r} returned "
                     "out-of-range sample indices."
                 )
+
+            if (
+                np.unique(indices_np).size != indices_np.size
+                or visited[indices_np].any()
+            ):
+                raise ValueError(
+                    f"Generator for {channel!r} returned duplicate "
+                    "sample indices."
+                )
+
+            if hypervectors.ndim != 2:
+                raise ValueError(
+                    f"{channel!r}: hypervectors must have shape (B, D); "
+                    f"got {tuple(hypervectors.shape)}."
+                )
+
+            if hypervectors.shape[1] != channel_prototypes.shape[1]:
+                raise ValueError(
+                    f"{channel!r}: hypervector dimension "
+                    f"{hypervectors.shape[1]} differs from prototype "
+                    f"dimension {channel_prototypes.shape[1]}."
+                )
+
+            # Ensure both tensors are on the same device.
+            hypervectors = hypervectors.to(channel_prototypes.device)
 
             batch_scores = cosine_scores(
                 Hb_int8=hypervectors,
@@ -308,12 +331,16 @@ def collect_channel_scores(
                     f"{len(batch_scores)} score rows."
                 )
 
+            if not np.isfinite(batch_scores).all():
+                raise ValueError(
+                    f"Channel {channel!r} produced nonfinite scores."
+                )
+
             scores_out[indices_np] = batch_scores
             visited[indices_np] = True
 
         if not visited.all():
             missing = np.flatnonzero(~visited)
-
             raise RuntimeError(
                 f"Channel {channel!r} is missing scores for "
                 f"{len(missing)} samples. First missing indices: "

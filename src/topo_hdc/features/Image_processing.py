@@ -1,5 +1,5 @@
 from scipy.interpolate import splprep, splev
-from scipy.ndimage import distance_transform_edt, center_of_mass
+from scipy.ndimage import distance_transform_edt, center_of_mass, map_coordinates
 from skimage.filters import threshold_otsu, threshold_local, gaussian
 from skimage.morphology import closing, opening, remove_small_objects, disk, closing
 from skimage.measure import label, regionprops, find_contours
@@ -51,25 +51,53 @@ class ProcessImage:
         if self.lab.max() == 0:
             return self.bw
         largest = max(regionprops(self.lab), key=lambda r: r.area).label
-        return self.lab == largest
+        if keep_largest:
+            self.lab = label(self.bw)
+            if self.lab.max() > 0:
+                largest = max(regionprops(self.lab), key=lambda r: r.area).label
+                self.bw = self.lab == largest
+
+        return self.bw
         
+#    def bbox_from_intensity(self, pad=2):
+#        x = self.img.astype(np.float32)
+#        if x.max() > 1.5:
+#            x /= 255.0
+#            
+#        t = threshold_otsu(x)
+#        # FIX: Change to x > t since MNIST/EMNIST letters are bright on a dark background
+#        bw = x > t  
+
+#        lab = label(bw)
+#        if lab.max() == 0:
+#            return None
+
+#        r = max(regionprops(lab), key=lambda rr: rr.area)
+#        y0, x0, y1, x1 = r.bbox 
+#        y0 = max(0, y0 - pad); x0 = max(0, x0 - pad)
+#        y1 = min(x.shape[0], y1 + pad); x1 = min(x.shape[1], x1 + pad)
+#        return y0, y1, x0, x1
+
     def bbox_from_intensity(self, pad=2):
         x = self.img.astype(np.float32)
         if x.max() > 1.5:
             x /= 255.0
-            
-        t = threshold_otsu(x)
-        # FIX: Change to x > t since MNIST/EMNIST letters are bright on a dark background
-        bw = x > t  
+        x = np.clip(x, 0.0, 1.0)
 
-        lab = label(bw)
-        if lab.max() == 0:
+        if x.size == 0 or x.max() == x.min():
             return None
 
-        r = max(regionprops(lab), key=lambda rr: rr.area)
-        y0, x0, y1, x1 = r.bbox 
-        y0 = max(0, y0 - pad); x0 = max(0, x0 - pad)
-        y1 = min(x.shape[0], y1 + pad); x1 = min(x.shape[1], x1 + pad)
+        foreground = x > threshold_otsu(x)
+
+        ys, xs = np.nonzero(foreground)
+        if len(ys) == 0:
+            return None
+
+        y0 = max(0, int(ys.min()) - pad)
+        y1 = min(x.shape[0], int(ys.max()) + 1 + pad)
+        x0 = max(0, int(xs.min()) - pad)
+        x1 = min(x.shape[1], int(xs.max()) + 1 + pad)
+
         return y0, y1, x0, x1
 
 
@@ -125,7 +153,13 @@ class ProcessImage:
         ys = np.clip(ys, 0, h - 1).astype(int)
         xs = np.clip(xs, 0, w - 1).astype(int)
         
-        log_polar_img = norm[ys, xs]
+        log_polar_img = map_coordinates(
+            norm,
+            [ys, xs],
+            order=1,
+            mode="constant",
+            cval=0.0,
+        )
         # 3. Compute 2D FFT Magnitude to achieve shift invariance 
         # (which maps back to Scale/Rotation invariance in log-polar space)
         f_transform = np.fft.fft2(log_polar_img)

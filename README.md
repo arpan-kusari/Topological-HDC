@@ -378,58 +378,38 @@ Run:
 chmod +x scripts/run_mnist_sweep.sh
 ./scripts/run_mnist_sweep.sh
 ```
-
+## Comparison code
 ---
-
-## Method Summary
-
-The model uses three channels:
-
-1. **HOG channel**
-   \[
-   H_h(x) = \mathrm{Bind}(\mathrm{Enc}_h(f_h(x)), r_h)
-   \]
-
-2. **Zernike/spatial-pyramid shape channel**
-   \[
-   H_z(x) = \mathrm{Bind}(\mathrm{Enc}_z(f_z(x)), r_z)
-   \]
-
-3. **Hole/topology channel**
-   \[
-   H_o(x) = \mathrm{Bind}(\mathrm{Enc}_o(f_o(x)), r_o)
-   \]
-
-Each channel forms class prototypes by bundling training hypervectors:
-
-\[
-P_t^c = \sum_{i:y_i=c} H_t(x_i),
-\qquad t\in\{h,z,o\}.
-\]
-
-Prediction uses late fusion of cosine similarities:
-
-\[
-s_c(x)
-=
-\cos(H_h(x),P_h^c)
-+
-\alpha \cos(H_z(x),P_z^c)
-+
-\beta \cos(H_o(x),P_o^c),
-\]
-
-where \(\alpha,\beta\) are tuned on a validation set.
-
-OnlineHD adaptation updates prototypes when a sample is misclassified:
-
-\[
-P^{y_i} \leftarrow P^{y_i} + \eta H(x_i),
-\qquad
-P^{\hat y_i} \leftarrow P^{\hat y_i} - \eta H(x_i).
-\]
-
+Run pixel HDC for with multiple seeds and all corruptions
+```bash
+python scripts/run_pixel_hdc.py \
+  --seeds 0 1 2 \
+  --dim 10000 \
+  --epochs 20 \
+  --lr 1.0 \
+  --angle 20 \
+  --sigma 0.1 \
+  --p 0.1 \
+  --cutout 12 \
+  --zoom 0.5 \
+  --out-dir runs/pixel_hdc/all_corruptions
+```
 ---
+---
+Run CNN with multiple seeds and all corruptions
+```bash
+python scripts/run_cnn_suite.py \
+  --seeds 0 1 2 \
+  --epochs 5 \
+  --batch-size 32 \
+  --patience 3 \
+  --angle 20 \
+  --sigma 0.1 \
+  --p 0.1 \
+  --cutout 12 \
+  --zoom 0.5 \
+  --out-dir runs/cnn/all_corruptions
+```
 
 ## Development
 

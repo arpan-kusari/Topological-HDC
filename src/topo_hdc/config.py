@@ -138,54 +138,10 @@ class PersistenceImageConfig:
         """Four directions times two homology dimensions."""
         return 8 * self.nbins * self.nbins
 
-
 @dataclass(frozen=True)
 class ImgProcessConfig:
     out_size: int = 64
-    degree: int = 6
-    radius: float = 20.0
-    grid: tuple[int, int] = (2, 2)
     pad: int = 2
-
-
-@dataclass(frozen=True)
-class HoleConfig:
-    """Legacy settings retained for hole utility compatibility."""
-
-    k_shape: int = 12
-    feature_length: int = 59
-    Q: int = 101
-    Hmax: int = 5
-
-
-@dataclass(frozen=True)
-class RobustHoleConfig:
-    """
-    Legacy morphological-hole configuration.
-
-    Use only with legacy hole utilities, not as the active
-    ExperimentConfig.ablation configuration.
-    """
-
-    proposal_method: str = "multiscale"
-    use_spoke_validation: bool = True
-    use_multiscale_persistence: bool = True
-    use_spatial_pyramid: bool = True
-    use_reliability_features: bool = True
-
-    closing_radii: tuple[int, ...] = (0, 1)
-    num_spokes: int = 64
-    enclosure_threshold: float = 0.95
-    max_missing_fraction: float = 0.08
-
-    min_area: int = 4
-    max_area_fraction: float = 0.30
-    min_scale_count: int = 2
-    ray_step: float = 0.5
-    merge_distance: float = 3.0
-
-    pyramid_levels: tuple[int, ...] = (1, 2, 4)
-
 
 @dataclass(frozen=True)
 class FusionConfig:
@@ -220,6 +176,7 @@ class FeatureConfig:
     cache_dir: Path = Path("cache/features")
     use_cache: bool = True
     force_recompute: bool = False
+    force_recompute_test: bool = False
 
     # None preserves Joblib's default worker behavior;
     # use -1 explicitly to request all available CPUs.
