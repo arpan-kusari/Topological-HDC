@@ -90,7 +90,7 @@ cd Topology-HDC
 Using `conda`:
 
 ```bash
-conda create -n topo-hdc python=3.10 -y
+conda create -n topo-hdc python=3.11 -y
 conda activate topo-hdc
 ```
 
@@ -106,7 +106,9 @@ source .topo-hdc-env/bin/activate
 For CUDA 12.4:
 
 ```bash
+python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -e .
 ```
 
 Verify:

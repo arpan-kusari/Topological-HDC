@@ -15,25 +15,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-import tensorflow as tf
-
-from sklearn.metrics import accuracy_score, confusion_matrix
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+from torchvision.datasets import MNIST
+from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedShuffleSplit
-
-from tensorflow.keras import Sequential
-from tensorflow.keras.datasets import mnist
-from tensorflow.keras.layers import (
-    Input,
-    Dense,
-    Flatten,
-    Conv2D,
-    Dropout,
-    MaxPooling2D,
-    BatchNormalization,
-)
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.losses import SparseCategoricalCrossentropy
-from tensorflow.keras.optimizers import Adam
 
 from topo_hdc.config import CorruptionConfig
 from topo_hdc.corruptions import apply_corruption
@@ -51,9 +38,8 @@ CORRUPTIONS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train a CNN per seed and evaluate all corruptions."
+        description="PyTorch CNN: train per seed and evaluate all corruptions."
     )
-
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
     parser.add_argument(
         "--corruptions",
@@ -61,7 +47,6 @@ def parse_args():
         choices=CORRUPTIONS,
         default=list(CORRUPTIONS),
     )
-
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--patience", type=int, default=3)
@@ -78,198 +63,250 @@ def parse_args():
         "--corruption-output-scale",
         choices=("uint8", "unit"),
         default="uint8",
-        help=(
-            "Intensity units returned by apply_corruption: "
-            "'uint8' means 0..255; 'unit' means 0..1."
-        ),
+        help="Output units of apply_corruption: 0..255 or 0..1.",
     )
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=Path("runs/cnn_suite"),
+        "--data-dir", type=Path, default=Path("data")
     )
-
+    parser.add_argument(
+        "--out-dir", type=Path, default=Path("runs/cnn_torch_suite")
+    )
     return parser.parse_args()
 
 
 def validate_args(args):
     if len(set(args.seeds)) != len(args.seeds):
         raise ValueError("Seeds must not contain duplicates.")
-
     if any(seed < 0 for seed in args.seeds):
         raise ValueError("Seeds must be nonnegative.")
-
     if len(set(args.corruptions)) != len(args.corruptions):
         raise ValueError("Corruptions must not contain duplicates.")
-
-    if args.epochs <= 0 or args.batch_size <= 0:
-        raise ValueError("Epochs and batch size must be positive.")
-
-    if args.patience < 0:
-        raise ValueError("Patience must be nonnegative.")
-
+    if args.epochs <= 0 or args.batch_size < 2:
+        raise ValueError("Epochs must be positive and batch size >= 2.")
+    if args.patience < 0 or args.num_workers < 0:
+        raise ValueError("Patience and worker count must be nonnegative.")
     if not 0 < args.val_split < 1:
         raise ValueError("Validation fraction must be between 0 and 1.")
-
     if not np.isfinite(args.lr) or args.lr <= 0:
         raise ValueError("Learning rate must be finite and positive.")
-
     if not np.isfinite(args.sigma) or args.sigma < 0:
-        raise ValueError("Noise sigma must be finite and nonnegative.")
-
+        raise ValueError("Sigma must be finite and nonnegative.")
     if not 0 <= args.p <= 1:
         raise ValueError("Salt-and-pepper probability must be in [0, 1].")
-
     if not 1 <= args.cutout <= 28:
         raise ValueError("Cutout size must be between 1 and 28.")
-
     if not np.isfinite(args.angle):
         raise ValueError("Rotation angle must be finite.")
-
     if not np.isfinite(args.zoom) or args.zoom <= 0:
         raise ValueError("Zoom must be finite and positive.")
 
 
-def split_train_val(X, y, val_fraction, seed):
-    splitter = StratifiedShuffleSplit(
-        n_splits=1,
-        test_size=val_fraction,
-        random_state=seed,
-    )
-    train_indices, val_indices = next(splitter.split(X, y))
+def seed_everything(seed, deterministic):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    return (
-        X[train_indices],
-        y[train_indices],
-        X[val_indices],
-        y[val_indices],
-    )
+    torch.backends.cudnn.benchmark = not deterministic
+    torch.backends.cudnn.deterministic = deterministic
+    torch.use_deterministic_algorithms(deterministic)
 
 
-def cnn_inputs(X, scale):
-    """Convert grayscale images to float32 (N, 28, 28, 1)."""
+class CharacterCNN(nn.Module):
+    """
+    Matches the supplied Keras layer layout.
+
+    Outputs logits: CrossEntropyLoss applies log-softmax internally.
+    """
+    def __init__(self):
+        super().__init__()
+
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(16, eps=1e-3, momentum=0.01),
+
+            nn.Conv2d(16, 32, kernel_size=3),
+            nn.ReLU(),
+            nn.BatchNorm2d(32, eps=1e-3, momentum=0.01),
+
+            # For 26x26 input, asymmetric padding matches Keras "same".
+            nn.ZeroPad2d((1, 2, 1, 2)),
+            nn.Conv2d(32, 64, kernel_size=5, stride=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.BatchNorm2d(64, eps=1e-3, momentum=0.01),
+            nn.Dropout(0.4),
+
+            # For 6x6 input, asymmetric padding matches Keras "same".
+            nn.ZeroPad2d((0, 1, 0, 1)),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.BatchNorm2d(64, eps=1e-3, momentum=0.01),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(32, 10),
+        )
+
+        # Explicit initialization; cross-framework results need not match.
+        for module in self.modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+
+        nn.init.kaiming_normal_(
+            self.features[0].weight,
+            mode="fan_in",
+            nonlinearity="relu",
+        )
+
+    def forward(self, x):
+        return self.classifier(self.features(x))
+
+
+def make_loader(
+    X, y, args, device, *, scale="uint8", shuffle=False, seed=0
+):
     X = np.asarray(X, dtype=np.float32)
 
     if X.ndim != 3 or X.shape[1:] != (28, 28):
-        raise ValueError(
-            f"Expected image shape (N, 28, 28); got {X.shape}."
-        )
-
+        raise ValueError(f"Expected (N, 28, 28); received {X.shape}.")
     if not np.isfinite(X).all():
         raise ValueError("Images contain nonfinite values.")
 
     if scale == "uint8":
         X = X / 255.0
 
-    return np.clip(X, 0.0, 1.0)[..., np.newaxis]
+    X = np.clip(X, 0, 1)
+    inputs = torch.from_numpy(np.ascontiguousarray(X[:, None]))
+    labels = torch.as_tensor(np.asarray(y), dtype=torch.long)
 
+    if len(inputs) != len(labels):
+        raise ValueError("Image and label counts differ.")
 
-def build_model(lr):
-    """Preserve the architecture from the supplied CNN."""
-    model = Sequential([
-        Input(shape=(28, 28, 1)),
+    generator = torch.Generator().manual_seed(seed)
 
-        Conv2D(
-            16,
-            kernel_size=(3, 3),
-            activation="relu",
-            padding="same",
-            kernel_initializer="he_normal",
-        ),
-        BatchNormalization(),
+    # BatchNorm at the final 1x1 map cannot train on a singleton batch.
+    drop_last = shuffle and len(inputs) % args.batch_size == 1
 
-        Conv2D(32, kernel_size=(3, 3), activation="relu"),
-        BatchNormalization(),
-
-        Conv2D(
-            64,
-            kernel_size=5,
-            strides=2,
-            padding="same",
-            activation="relu",
-        ),
-        MaxPooling2D((2, 2)),
-        BatchNormalization(),
-        Dropout(0.4),
-
-        Conv2D(
-            64,
-            kernel_size=(3, 3),
-            strides=2,
-            padding="same",
-            activation="relu",
-        ),
-        MaxPooling2D((2, 2)),
-        BatchNormalization(),
-
-        Flatten(),
-        Dense(32, activation="relu"),
-        Dropout(0.4),
-        Dense(10, activation="softmax"),
-    ])
-
-    model.compile(
-        optimizer=Adam(learning_rate=lr),
-        loss=SparseCategoricalCrossentropy(),
-        metrics=["accuracy"],
+    return DataLoader(
+        TensorDataset(inputs, labels),
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda",
+        generator=generator,
+        drop_last=drop_last,
     )
 
-    return model
+
+def train_epoch(model, loader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0.0
+    correct = 0
+    count = 0
+
+    for inputs, labels in loader:
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(inputs)
+        loss = criterion(logits, labels)
+        loss.backward()
+        optimizer.step()
+
+        count += len(labels)
+        total_loss += loss.item() * len(labels)
+        correct += (logits.argmax(1) == labels).sum().item()
+
+    return total_loss / count, correct / count
+
+
+@torch.inference_mode()
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    count = 0
+    predictions = []
+
+    for inputs, labels in loader:
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        logits = model(inputs)
+        loss = criterion(logits, labels)
+        predicted = logits.argmax(1)
+
+        count += len(labels)
+        total_loss += loss.item() * len(labels)
+        correct += (predicted == labels).sum().item()
+        predictions.append(predicted.cpu().numpy())
+
+    return (
+        total_loss / count,
+        correct / count,
+        np.concatenate(predictions),
+    )
 
 
 def save_json(path, value):
-    path.write_text(
-        json.dumps(value, indent=2),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(value, indent=2), encoding="utf-8")
+
+
+def write_csv(path, rows):
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def save_history(history, destination):
-    values = history.history
-    fields = ["epoch"] + list(values)
-
-    with (destination / "history.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-
-        for index in range(len(values["loss"])):
-            writer.writerow({
-                "epoch": index + 1,
-                **{
-                    name: float(series[index])
-                    for name, series in values.items()
-                },
-            })
+    write_csv(destination / "history.csv", history)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    epochs = [row["epoch"] for row in history]
 
-    axes[0].plot(values["accuracy"], label="Training")
-    axes[0].plot(values["val_accuracy"], label="Validation")
-    axes[0].set_xlabel("Epoch index")
+    for key, label in (
+        ("train_accuracy", "Training"),
+        ("val_accuracy", "Validation"),
+    ):
+        axes[0].plot(epochs, [r[key] for r in history], label=label)
+
+    for key, label in (
+        ("train_loss", "Training"),
+        ("val_loss", "Validation"),
+    ):
+        axes[1].plot(epochs, [r[key] for r in history], label=label)
+
     axes[0].set_ylabel("Accuracy")
-    axes[0].legend()
-
-    axes[1].plot(values["loss"], label="Training")
-    axes[1].plot(values["val_loss"], label="Validation")
-    axes[1].set_xlabel("Epoch index")
     axes[1].set_ylabel("Loss")
-    axes[1].legend()
+    for ax in axes:
+        ax.set_xlabel("Epoch")
+        ax.legend()
 
     fig.tight_layout()
     fig.savefig(destination / "learning_curves.png", dpi=150)
     plt.close(fig)
 
 
-def save_confusion(y_true, predictions, destination, title):
+def save_confusion(labels, predictions, destination, title):
     matrix = confusion_matrix(
-        y_true,
-        predictions,
-        labels=np.arange(10),
+        labels, predictions, labels=np.arange(10)
     )
-
     np.savetxt(
         destination / "confusion_matrix.csv",
         matrix,
@@ -278,19 +315,10 @@ def save_confusion(y_true, predictions, destination, title):
     )
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(
-        matrix,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        xticklabels=np.arange(10),
-        yticklabels=np.arange(10),
-        ax=ax,
-    )
+    sns.heatmap(matrix, annot=True, fmt="d", cmap="Blues", ax=ax)
     ax.set_xlabel("Predicted label")
     ax.set_ylabel("True label")
     ax.set_title(title)
-
     fig.tight_layout()
     fig.savefig(destination / "confusion_matrix.png", dpi=150)
     plt.close(fig)
@@ -299,185 +327,192 @@ def save_confusion(y_true, predictions, destination, title):
 def save_suite_results(root, records):
     save_json(root / "results.json", records)
 
-    if not records:
-        return
-
-    rows = []
-    for record in records:
-        row = record.copy()
-        row["corruption_config"] = json.dumps(
-            row["corruption_config"],
-            sort_keys=True,
-        )
-        rows.append(row)
-
-    with (root / "results.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=list(rows[0]),
-        )
-        writer.writeheader()
-        writer.writerows(rows)
+    csv_rows = [
+        {
+            **record,
+            "corruption_config": json.dumps(
+                record["corruption_config"], sort_keys=True
+            ),
+        }
+        for record in records
+    ]
+    write_csv(root / "results.csv", csv_rows)
 
     summary = []
-
-    for corruption in dict.fromkeys(
-        record["corruption"] for record in records
-    ):
+    for corruption in dict.fromkeys(r["corruption"] for r in records):
         selected = [
-            record for record in records
-            if record["corruption"] == corruption
+            r for r in records if r["corruption"] == corruption
         ]
-        accuracies = np.asarray([
-            record["test_accuracy"] for record in selected
-        ])
-
+        values = np.asarray([r["test_accuracy"] for r in selected])
         summary.append({
             "corruption": corruption,
             "num_seeds": len(selected),
-            "mean_accuracy_percent": float(100 * accuracies.mean()),
+            "mean_accuracy_percent": float(100 * values.mean()),
             "std_accuracy_pp": (
-                float(100 * accuracies.std(ddof=1))
-                if len(selected) > 1
-                else None
+                float(100 * values.std(ddof=1))
+                if len(values) > 1 else None
             ),
         })
 
     save_json(root / "summary.json", summary)
-
-    with (root / "summary.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=list(summary[0]),
-        )
-        writer.writeheader()
-        writer.writerows(summary)
+    write_csv(root / "summary.csv", summary)
 
 
 def main():
     args = parse_args()
     validate_args(args)
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is unavailable. Check PyTorch installation/GPU allocation, "
+            "or run with --device cpu."
+        )
 
-    settings = vars(args).copy()
-    settings["out_dir"] = str(settings["out_dir"])
+    # Required by some CUDA operations in strict deterministic mode.
+    if args.deterministic:
+        import os
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    settings = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    settings["torch_version"] = str(torch.__version__)
+    settings["torch_cuda_version"] = torch.version.cuda
     save_json(args.out_dir / "config.json", settings)
 
-    if args.deterministic:
-        tf.config.experimental.enable_op_determinism()
+    print(f"Device: {device}")
+    if device.type == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(device)}")
 
-    (X_full, y_full), (X_test_raw, y_test) = mnist.load_data()
+    training_data = MNIST(
+        root=str(args.data_dir), train=True, download=True
+    )
+    testing_data = MNIST(
+        root=str(args.data_dir), train=False, download=True
+    )
+
+    X_full = training_data.data.numpy()
+    y_full = training_data.targets.numpy()
+    X_test = testing_data.data.numpy()
+    y_test = testing_data.targets.numpy()
 
     records = []
 
-    # Train once per seed, then finish all corruptions for that seed.
+    # Seed -> all corruptions -> next seed.
     for seed in args.seeds:
-        print(f"\n{'=' * 60}\nTraining seed {seed}\n{'=' * 60}")
-
-        tf.keras.backend.clear_session()
-        tf.keras.utils.set_random_seed(seed)
+        seed_everything(seed, args.deterministic)
 
         seed_dir = args.out_dir / f"seed_{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
 
-        X_train_raw, y_train, X_val_raw, y_val = split_train_val(
-            X_full, y_full, args.val_split, seed
+        splitter = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=args.val_split,
+            random_state=seed,
         )
+        train_idx, val_idx = next(splitter.split(X_full, y_full))
 
-        X_train = cnn_inputs(X_train_raw, "uint8")
-        X_val = cnn_inputs(X_val_raw, "uint8")
-        X_clean = cnn_inputs(X_test_raw, "uint8")
-
-        model = build_model(args.lr)
-
-        if seed == args.seeds[0]:
-            model.summary()
-
-        checkpoint = seed_dir / "best_model.weights.h5"
-
-        callbacks = [
-            EarlyStopping(
-                monitor="val_loss",
-                patience=args.patience,
-                restore_best_weights=True,
-                verbose=1,
-            ),
-            ModelCheckpoint(
-                filepath=str(checkpoint),
-                monitor="val_loss",
-                mode="min",
-                save_best_only=True,
-                save_weights_only=True,
-                verbose=1,
-            ),
-        ]
-
-        history = model.fit(
-            X_train,
-            y_train,
-            validation_data=(X_val, y_val),
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            callbacks=callbacks,
-            shuffle=True,
-            verbose=1,
+        train_loader = make_loader(
+            X_full[train_idx], y_full[train_idx],
+            args, device, shuffle=True, seed=seed,
         )
+        val_loader = make_loader(
+            X_full[val_idx], y_full[val_idx], args, device
+        )
+        clean_loader = make_loader(X_test, y_test, args, device)
 
-        # Explicitly load this seed's best validation-loss checkpoint.
-        model.load_weights(checkpoint)
+        model = CharacterCNN().to(device)
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=args.lr, eps=1e-7
+        )
+        criterion = nn.CrossEntropyLoss()
 
+        best_state = None
+        best_loss = float("inf")
+        best_epoch = 0
+        wait = 0
+        history = []
+
+        print(f"\nTraining seed {seed}")
+        print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+        for epoch in range(1, args.epochs + 1):
+            train_loss, train_accuracy = train_epoch(
+                model, train_loader, optimizer, criterion, device
+            )
+            val_loss, val_accuracy, _ = evaluate(
+                model, val_loader, criterion, device
+            )
+
+            history.append({
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "train_accuracy": train_accuracy,
+                "val_loss": val_loss,
+                "val_accuracy": val_accuracy,
+            })
+            print(
+                f"Epoch {epoch}: "
+                f"train loss={train_loss:.4f}, acc={train_accuracy:.4f}; "
+                f"val loss={val_loss:.4f}, acc={val_accuracy:.4f}"
+            )
+
+            if val_loss < best_loss:
+                best_loss = val_loss
+                best_epoch = epoch
+                wait = 0
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                }
+                torch.save(
+                    {
+                        "model_state_dict": best_state,
+                        "epoch": best_epoch,
+                        "val_loss": best_loss,
+                        "seed": seed,
+                        "config": settings,
+                    },
+                    seed_dir / "best_model.pt",
+                )
+            else:
+                wait += 1
+                if wait >= args.patience:
+                    print(f"Early stopping at epoch {epoch}")
+                    break
+
+        model.load_state_dict(best_state)
         save_history(history, seed_dir)
 
-        train_metrics = model.evaluate(
-            X_train, y_train,
-            batch_size=args.batch_size,
-            verbose=0,
-            return_dict=True,
+        # Evaluate training in inference mode for a clean generalization check.
+        train_eval_loader = make_loader(
+            X_full[train_idx], y_full[train_idx], args, device
         )
-        val_metrics = model.evaluate(
-            X_val, y_val,
-            batch_size=args.batch_size,
-            verbose=0,
-            return_dict=True,
+        train_loss, train_accuracy, _ = evaluate(
+            model, train_eval_loader, criterion, device
         )
-
-        clean_probabilities = model.predict(
-            X_clean,
-            batch_size=args.batch_size,
-            verbose=0,
+        val_loss, val_accuracy, _ = evaluate(
+            model, val_loader, criterion, device
         )
-        clean_predictions = clean_probabilities.argmax(axis=1)
-        clean_accuracy = float(
-            accuracy_score(y_test, clean_predictions)
+        clean_loss, clean_accuracy, clean_predictions = evaluate(
+            model, clean_loader, criterion, device
         )
 
-        best_epoch = int(
-            np.argmin(history.history["val_loss"]) + 1
-        )
-
-        save_json(
-            seed_dir / "training_metrics.json",
-            {
-                "seed": seed,
-                "epochs_completed": len(history.history["loss"]),
-                "best_epoch": best_epoch,
-                "train_accuracy": float(train_metrics["accuracy"]),
-                "train_loss": float(train_metrics["loss"]),
-                "val_accuracy": float(val_metrics["accuracy"]),
-                "val_loss": float(val_metrics["loss"]),
-                "clean_test_accuracy": clean_accuracy,
-                "num_parameters": int(model.count_params()),
-            },
-        )
+        save_json(seed_dir / "training_metrics.json", {
+            "seed": seed,
+            "best_epoch": best_epoch,
+            "epochs_completed": len(history),
+            "train_loss": train_loss,
+            "train_accuracy": train_accuracy,
+            "val_loss": val_loss,
+            "val_accuracy": val_accuracy,
+            "clean_test_accuracy": clean_accuracy,
+        })
 
         for corruption in args.corruptions:
-            print(f"\nSeed {seed}: evaluating {corruption}")
-
             destination = seed_dir / corruption
             destination.mkdir(parents=True, exist_ok=True)
 
@@ -491,89 +526,85 @@ def main():
             )
 
             if corruption == "none":
+                loss = clean_loss
+                accuracy = clean_accuracy
                 predictions = clean_predictions
             else:
-                # Reset corruption randomness independently of training.
-                np.random.seed(seed)
+                # Independent of randomness consumed by model training.
                 random.seed(seed)
+                np.random.seed(seed)
+                torch.manual_seed(seed)
 
-                corrupted = np.asarray(
-                    apply_corruption(
-                        X=X_test_raw.copy(),
-                        cfg=corruption_cfg,
-                    )
-                )
-
-                if corrupted.shape != X_test_raw.shape:
+                corrupted = np.asarray(apply_corruption(
+                    X=X_test.copy(),
+                    cfg=corruption_cfg,
+                ))
+                if corrupted.shape != X_test.shape:
                     raise ValueError(
-                        f"{corruption}: corruption changed image shape "
-                        f"from {X_test_raw.shape} to {corrupted.shape}."
+                        f"{corruption}: corruption changed image shape."
                     )
 
-                inputs = cnn_inputs(
+                loader = make_loader(
                     corrupted,
-                    args.corruption_output_scale,
+                    y_test,
+                    args,
+                    device,
+                    scale=args.corruption_output_scale,
                 )
-
-                probabilities = model.predict(
-                    inputs,
-                    batch_size=args.batch_size,
-                    verbose=0,
+                loss, accuracy, predictions = evaluate(
+                    model, loader, criterion, device
                 )
-                predictions = probabilities.argmax(axis=1)
-
-            test_accuracy = float(
-                accuracy_score(y_test, predictions)
-            )
 
             record = {
-                "model": "cnn",
+                "model": "pytorch_cnn",
                 "dataset": "mnist",
                 "seed": seed,
                 "corruption": corruption,
                 "corruption_config": asdict(corruption_cfg),
                 "best_epoch": best_epoch,
-                "epochs_completed": len(history.history["loss"]),
-                "train_accuracy": float(train_metrics["accuracy"]),
-                "val_accuracy": float(val_metrics["accuracy"]),
+                "epochs_completed": len(history),
+                "train_accuracy": train_accuracy,
+                "val_accuracy": val_accuracy,
                 "clean_test_accuracy": clean_accuracy,
-                "test_accuracy": test_accuracy,
-                "test_accuracy_percent": 100 * test_accuracy,
+                "test_loss": loss,
+                "test_accuracy": accuracy,
+                "test_accuracy_percent": 100 * accuracy,
                 "clean_to_corrupted_drop_pp": (
-                    100 * (clean_accuracy - test_accuracy)
+                    100 * (clean_accuracy - accuracy)
                 ),
-                "num_train": len(y_train),
-                "num_val": len(y_val),
+                "num_train": len(train_idx),
+                "num_val": len(val_idx),
                 "num_test": len(y_test),
                 "out_dir": str(destination),
             }
 
             save_json(destination / "metrics.json", record)
-
             np.savez_compressed(
                 destination / "predictions.npz",
                 labels=y_test,
                 predictions=predictions,
             )
-
             save_confusion(
                 y_test,
                 predictions,
                 destination,
-                title=f"CNN: {corruption}, seed {seed}",
+                f"PyTorch CNN: {corruption}, seed {seed}",
             )
 
             records.append(record)
             save_suite_results(args.out_dir, records)
 
-            print(f"Test accuracy: {100 * test_accuracy:.2f}%")
+            print(
+                f"Seed {seed}, {corruption}: "
+                f"{100 * accuracy:.2f}%"
+            )
 
-        del model
+        del model, optimizer
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-    print(f"\nFinished. Results saved to {args.out_dir}")
-    print(f"Detailed results: {args.out_dir / 'results.csv'}")
-    print(f"Mean and standard deviation: {args.out_dir / 'summary.csv'}")
-
+    print(f"\nFinished. Results: {args.out_dir / 'results.csv'}")
+    print(f"Summary: {args.out_dir / 'summary.csv'}")
     return 0
 
 
